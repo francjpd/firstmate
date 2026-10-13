@@ -8,8 +8,15 @@ This page is for operators who turn Model-delay on and need to know what it chan
 
 Model-delay changes only the pace at which agents issue model calls.
 It never changes what an agent does, which model it uses, or how it answers.
-The pacing rule is owned by [`.agents/skills/model-delay/SKILL.md`](../.agents/skills/model-delay/SKILL.md), which fixes the pause between model turns.
-Crewmates working in a project's local copy cannot discover that skill through `.agents/skills`, so their launch brief carries a pointer to the same rule as a dispatch-time contract.
+The pacing rule is owned by [`.agents/skills/model-delay/SKILL.md`](../.agents/skills/model-delay/SKILL.md), which fixes the pause between model turns, and `bin/fm-model-delay.sh` owns the wait itself.
+While the mode is on, an agent runs that helper before its next model turn; the helper blocks in the foreground, prints one short line, backgrounds nothing, needs no timer or timeout, and is inert while the mode is off.
+Crewmates working in a project's local copy cannot discover that skill through `.agents/skills`, so their launch brief names the helper and the home's config directory as a dispatch-time contract.
+
+## Token cost
+
+The wait spends no model tokens.
+The residual cost is what the agent spends issuing the helper call and reading its one-line result, a handful of tokens per paced turn.
+Literal zero would need a per-harness hook or a gate in front of the model endpoint, and neither is harness-agnostic, so that path is not shipped here.
 
 ## Turning it on and off
 
@@ -30,7 +37,8 @@ Turning the mode off restores the stock row or the plain boat immediately.
 
 - [`configuration.md`](configuration.md#model-delay-preference-configmodel-delay) owns the persisted preference file and its resolution rules.
 - `.agents/skills/model-delay/SKILL.md` owns the pacing rule, including the fixed interval.
-- `bin/fm-dod-lib.sh` owns the launch-brief pacing section that carries the rule to crewmates who cannot discover the skill.
+- `bin/fm-model-delay.sh` owns the harness-agnostic wait and gates itself on the same `config/model-delay` switch.
+- `bin/fm-dod-lib.sh` owns the launch-brief pacing section that points crewmates who cannot discover the skill at the helper, the interval owner, and this home's config directory.
 - `.pi/extensions/lib/fm-calm-working-ship.ts` owns Pi's sandglass rendering inside the shared working widget.
 
 ## A stricter future option

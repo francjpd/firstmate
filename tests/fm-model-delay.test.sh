@@ -33,8 +33,9 @@ test_model_delay_skill_contract() {
   assert_grep "model-delay on" "$SKILL" "model-delay skill trigger does not name its on state"
   assert_grep "pause 45 seconds between model turns" "$SKILL" \
     "model-delay skill does not fix the pacing interval"
-  assert_grep 'sleep 45' "$SKILL" "model-delay skill names no way to enforce the pause"
-  pass "model-delay skill exists and its trigger, interval, and enforcement are stated"
+  assert_grep "bin/fm-model-delay.sh 45" "$SKILL" \
+    "model-delay skill does not point at the harness-agnostic wait helper"
+  pass "model-delay skill exists and its trigger, interval, and helper are stated"
 }
 
 # The mode must be discoverable where Calm is documented, and the preference contract
@@ -43,11 +44,74 @@ test_model_delay_documentation_contract() {
   [ -f "$DOC" ] || fail "model-delay documentation is missing at $DOC"
   assert_grep "config/model-delay" "$DOC" "model-delay page does not name the preference"
   assert_grep "../.agents/skills/model-delay/SKILL.md" "$DOC" "model-delay page does not point at the skill owner"
+  assert_grep "bin/fm-model-delay.sh" "$DOC" "model-delay page does not point at the wait helper"
+  assert_grep "## Token cost" "$DOC" "model-delay page does not document the waiting call's token cost"
   assert_grep "## Model-delay preference (config/model-delay)" "$CONFIG_DOC" \
     "configuration.md has no model-delay preference section"
   assert_grep "model-delay.md" "$CONFIG_DOC" "configuration.md does not link the model-delay page"
   assert_grep "model-delay.md" "$ROOT/docs/calm.md" "calm.md does not link its model-delay sibling"
   pass "model-delay is documented with the preference owned by configuration.md"
+}
+
+# The helper owns the wait: it gates on config/model-delay, blocks in the foreground for
+# exactly the interval it is given, and launches neither a background process nor a
+# timeout wrapper. A fake timeout on PATH proves the last point behaviorally, and the
+# elapsed bound proves the wait was not backgrounded.
+test_model_delay_helper_contract() {
+  local helper dir fakebin start end out rc
+  helper="$ROOT/bin/fm-model-delay.sh"
+  [ -x "$helper" ] || fail "model-delay helper is missing or not executable at $helper"
+  dir="$TMP_ROOT/helper-config"
+  fakebin="$TMP_ROOT/helper-fakebin"
+  mkdir -p "$dir" "$fakebin"
+  cat >"$fakebin/timeout" <<'SH'
+#!/usr/bin/env bash
+printf 'timeout invoked\n' >>"$FM_MODEL_DELAY_TIMEOUT_LOG"
+exit 99
+SH
+  chmod +x "$fakebin/timeout"
+
+  # Absent and off are inert: immediate, silent, success.
+  start=$(date +%s)
+  out=$(PATH="$fakebin:$PATH" bash "$helper" 5 "$dir")
+  rc=$?
+  end=$(date +%s)
+  [ "$rc" -eq 0 ] || fail "model-delay helper with no preference exited $rc"
+  [ -z "$out" ] || fail "model-delay helper with no preference printed: $out"
+  [ "$((end - start))" -lt 2 ] || fail "model-delay helper waited for a mode that was not on"
+
+  printf 'off\n' >"$dir/model-delay"
+  out=$(PATH="$fakebin:$PATH" bash "$helper" 5 "$dir")
+  rc=$?
+  [ "$rc" -eq 0 ] || fail "model-delay helper with the preference off exited $rc"
+  [ -z "$out" ] || fail "model-delay helper with the preference off printed: $out"
+
+  # On: it blocks in the foreground for the interval, prints one short line, and
+  # launches no timeout. A backgrounded wait would return fast, so the elapsed bound
+  # is the behavioral proof that nothing was backgrounded.
+  printf 'on\n' >"$dir/model-delay"
+  start=$(date +%s)
+  out=$(FM_MODEL_DELAY_TIMEOUT_LOG="$TMP_ROOT/helper-timeout.log" PATH="$fakebin:$PATH" \
+    bash "$helper" 2 "$dir")
+  rc=$?
+  end=$(date +%s)
+  [ "$rc" -eq 0 ] || fail "model-delay helper with the preference on exited $rc"
+  [ "$((end - start))" -ge 2 ] || fail "model-delay helper returned before its interval elapsed"
+  case "$out" in
+    *model-delay*paused*2s*) ;;
+    *) fail "model-delay helper printed an unexpected line: $out" ;;
+  esac
+  [ ! -s "$TMP_ROOT/helper-timeout.log" ] || fail "model-delay helper launched a timeout wrapper"
+
+  # A missing or invalid interval is refused, never silently defaulted, because the
+  # skill is the only owner of the interval.
+  bash "$helper" >/dev/null 2>&1
+  [ "$?" -eq 2 ] || fail "model-delay helper accepted a missing interval"
+  bash "$helper" 0 "$dir" >/dev/null 2>&1
+  [ "$?" -eq 2 ] || fail "model-delay helper accepted a zero interval"
+  bash "$helper" abc "$dir" >/dev/null 2>&1
+  [ "$?" -eq 2 ] || fail "model-delay helper accepted a non-numeric interval"
+  pass "model-delay helper is inert while off, blocks for exactly the given interval, prints one line, launches no timeout, and refuses a missing interval"
 }
 
 # Load the real extension against a fake Pi and assert the sandglass appears only while
@@ -222,6 +286,7 @@ JS
 
 test_model_delay_skill_contract
 test_model_delay_documentation_contract
+test_model_delay_helper_contract
 test_pi_model_delay_indicator_and_toggle
 
 echo "# all fm-model-delay tests passed"

@@ -140,24 +140,27 @@ EOF
 # after fm_brief_worker_role. It prints nothing unless the home's config/model-delay
 # preference reads exactly "on", so a disabled mode changes no brief. The skill
 # .agents/skills/model-delay/SKILL.md owns the pacing rule, including the fixed
-# interval; this section only points at it, because a worker in another project's
-# worktree cannot discover that skill through .agents/skills, and it gives the same
-# absolute-path fallback fm_brief_worker_role uses for firstmate-coding-guidelines.
-# The config argument is the resolved config directory (FM_CONFIG_OVERRIDE or
-# $FM_HOME/config), and the code root is the Firstmate checkout that holds the skill.
-# Both are empty for callers that opt out, which suppress the section.
+# interval, and points at bin/fm-model-delay.sh, which owns the wait; this section
+# names both the helper and this home's config directory, because a worker in another
+# project's worktree cannot discover that skill or that bin/ through its own tree, and
+# it gives the same absolute-path fallback fm_brief_worker_role uses for
+# firstmate-coding-guidelines. The config argument is the resolved config directory
+# (FM_CONFIG_OVERRIDE or $FM_HOME/config), and the code root is the Firstmate checkout
+# that holds the helper and skill. Both are empty for callers that opt out, which
+# suppress the section.
 fm_model_delay_pacing_contract() {  # <config-dir> <code-root>
   local config=$1 root=$2
   [ -n "$config" ] || return 0
   [ -f "$config/model-delay" ] || return 0
   [ "$(tr -d '[:space:]' <"$config/model-delay" 2>/dev/null)" = on ] || return 0
-  cat <<'EOF'
+  cat <<EOF
 
 # Current model pacing contract
 This section supersedes every earlier brief instruction about model-call pacing.
-This home has model-delay on: load `.agents/skills/model-delay/SKILL.md` before your first model turn and follow its fixed pause between model turns for the whole task.
+This home has model-delay on: before each model turn, run \`$root/bin/fm-model-delay.sh <seconds> $config\`, where <seconds> is the fixed pause \`.agents/skills/model-delay/SKILL.md\` names.
+The helper blocks in the foreground, never backgrounds or times out, and is inert when the mode is off.
+If that skill name does not resolve in this session, read \`$root/.agents/skills/model-delay/SKILL.md\` for the interval instead.
 EOF
-  printf "If that skill name does not resolve in this session, read \`%s/.agents/skills/model-delay/SKILL.md\` and follow it instead.\n" "$root"
 }
 
 # Closed-set gate shared by every forge-aware renderer and bin/fm-brief.sh, so a

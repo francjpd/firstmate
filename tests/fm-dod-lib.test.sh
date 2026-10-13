@@ -487,13 +487,15 @@ test_model_delay_pacing_contract_gate() {
   fm_model_delay_pacing_contract "$cfg" "$ROOT" >"$TMP_ROOT/pacing-on.txt"
   assert_grep "Current model pacing contract" "$TMP_ROOT/pacing-on.txt" \
     "model-delay contract did not print its heading"
-  assert_grep "\`.agents/skills/model-delay/SKILL.md\`" "$TMP_ROOT/pacing-on.txt" \
-    "model-delay contract did not name the skill"
-  assert_grep "read \`$skill\` and follow it instead" "$TMP_ROOT/pacing-on.txt" \
+  assert_grep "\`$ROOT/bin/fm-model-delay.sh <seconds> $cfg\`" "$TMP_ROOT/pacing-on.txt" \
+    "model-delay contract did not name the wait helper and this home's config directory"
+  assert_grep "fixed pause \`.agents/skills/model-delay/SKILL.md\` names" "$TMP_ROOT/pacing-on.txt" \
+    "model-delay contract did not point at the interval owner"
+  assert_grep "read \`$skill\` for the interval instead" "$TMP_ROOT/pacing-on.txt" \
     "model-delay contract did not name the fallback file"
-  assert_grep "fixed pause between model turns" "$TMP_ROOT/pacing-on.txt" \
-    "model-delay contract did not carry the pacing requirement"
-  pass "model-delay pacing contract is gated on config/model-delay and names the skill rule"
+  assert_grep "never backgrounds or times out" "$TMP_ROOT/pacing-on.txt" \
+    "model-delay contract did not state the helper's foreground wait"
+  pass "model-delay pacing contract is gated on config/model-delay and names the helper, interval owner, and fallback"
 }
 
 test_worker_role_names_skill_and_fallback_file

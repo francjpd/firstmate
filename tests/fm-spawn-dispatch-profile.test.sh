@@ -219,7 +219,9 @@ test_launch_brief_carries_model_delay_pacing() {
   [ -f "$brief" ] || fail "model-delay-on spawn wrote no launch brief"
   assert_grep "Current model pacing contract" "$brief" \
     "the launch brief omitted the model-delay pacing contract"
-  assert_grep "read \`$ROOT/.agents/skills/model-delay/SKILL.md\` and follow it instead" "$brief" \
+  assert_grep "\`$ROOT/bin/fm-model-delay.sh <seconds> $HOME_DIR/config\`" "$brief" \
+    "the launch brief omitted the helper call or this home's config directory"
+  assert_grep "read \`$ROOT/.agents/skills/model-delay/SKILL.md\` for the interval instead" "$brief" \
     "the launch brief omitted the model-delay skill fallback path"
   pass "the launch brief carries the model-delay pacing contract only while the preference is on"
 }
