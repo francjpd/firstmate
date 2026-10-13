@@ -3256,6 +3256,7 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   BRIEF_TMP="$DATA/$ID/.launch-brief.md.${BASHPID:-$$}"
   {
     fm_brief_worker_role "$STATE" "$ID" "$FM_ROOT" &&
+      fm_model_delay_pacing_contract "$CONFIG" "$FM_ROOT" &&
       printf '\n' &&
       cat "$SOURCE_BRIEF" &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then

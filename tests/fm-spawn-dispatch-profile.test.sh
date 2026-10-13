@@ -190,6 +190,40 @@ test_claude_launch_brief_publishes_record_doorbell() {
   pass "a claude launch publishes the brief as an operational-inbox record and passes only the doorbell"
 }
 
+# A worker in another project's local copy cannot discover .agents/skills, so the
+# launch brief itself must carry the model-delay pacing contract whenever the home's
+# config/model-delay preference is on, and must omit it otherwise.
+test_launch_brief_carries_model_delay_pacing() {
+  local rec id out status brief
+  # Off by default: the generated brief carries no pacing section.
+  id=pacing-off-z1
+  rec=$(make_spawn_case pacing-off claude "$id")
+  read_case_record "$rec"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "model-delay-off spawn should succeed"$'\n'"$out"
+  brief="$HOME_DIR/data/$id/launch-brief.md"
+  [ -f "$brief" ] || fail "model-delay-off spawn wrote no launch brief"
+  assert_no_grep "model-delay" "$brief" \
+    "a default-off home leaked the model-delay contract into the brief"
+
+  # On: the same spawn path carries the pacing contract and the skill fallback path.
+  id=pacing-on-z1
+  rec=$(make_spawn_case pacing-on claude "$id")
+  read_case_record "$rec"
+  printf 'on\n' >"$HOME_DIR/config/model-delay"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "model-delay-on spawn should succeed"$'\n'"$out"
+  brief="$HOME_DIR/data/$id/launch-brief.md"
+  [ -f "$brief" ] || fail "model-delay-on spawn wrote no launch brief"
+  assert_grep "Current model pacing contract" "$brief" \
+    "the launch brief omitted the model-delay pacing contract"
+  assert_grep "read \`$ROOT/.agents/skills/model-delay/SKILL.md\` and follow it instead" "$brief" \
+    "the launch brief omitted the model-delay skill fallback path"
+  pass "the launch brief carries the model-delay pacing contract only while the preference is on"
+}
+
 # A secondmate's launch brief belongs to the secondmate home that pane runs in,
 # so its record must publish there rather than into the primary's state.
 test_claude_secondmate_launch_brief_publishes_into_its_own_home() {
@@ -2193,6 +2227,7 @@ test_non_claude_harness_ignores_claude_permission_mode() {
 test_worker_launch_delivers_role_scope
 test_no_profile_keeps_claude_profile_defaults
 test_claude_launch_brief_publishes_record_doorbell
+test_launch_brief_carries_model_delay_pacing
 test_claude_secondmate_launch_brief_publishes_into_its_own_home
 test_claude_spawn_refuses_when_the_brief_record_cannot_publish
 test_non_cursor_launch_clears_inherited_cursor_markers

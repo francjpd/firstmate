@@ -463,6 +463,40 @@ test_worker_role_names_skill_and_fallback_file() {
   pass "worker role names the skill and its fallback skill file"
 }
 
+# The model-delay pacing contract is the launch-brief carry for a worker that
+# cannot discover .agents/skills/model-delay. It must appear only while the
+# home's config/model-delay reads "on", and it must point at the skill by name
+# and by the same absolute fallback path fm_brief_worker_role uses.
+test_model_delay_pacing_contract_gate() {
+  local cfg skill
+  cfg="$TMP_ROOT/model-delay-config"
+  mkdir -p "$cfg"
+  skill="$ROOT/.agents/skills/model-delay/SKILL.md"
+  [ -f "$skill" ] || fail "model-delay skill file is missing at $skill"
+
+  fm_model_delay_pacing_contract "$cfg" "$ROOT" >"$TMP_ROOT/pacing-absent.txt"
+  [ ! -s "$TMP_ROOT/pacing-absent.txt" ] \
+    || fail "model-delay contract printed with no preference file"
+
+  printf 'off\n' >"$cfg/model-delay"
+  fm_model_delay_pacing_contract "$cfg" "$ROOT" >"$TMP_ROOT/pacing-off.txt"
+  [ ! -s "$TMP_ROOT/pacing-off.txt" ] \
+    || fail "model-delay contract printed while the preference was off"
+
+  printf 'on\n' >"$cfg/model-delay"
+  fm_model_delay_pacing_contract "$cfg" "$ROOT" >"$TMP_ROOT/pacing-on.txt"
+  assert_grep "Current model pacing contract" "$TMP_ROOT/pacing-on.txt" \
+    "model-delay contract did not print its heading"
+  assert_grep "\`.agents/skills/model-delay/SKILL.md\`" "$TMP_ROOT/pacing-on.txt" \
+    "model-delay contract did not name the skill"
+  assert_grep "read \`$skill\` and follow it instead" "$TMP_ROOT/pacing-on.txt" \
+    "model-delay contract did not name the fallback file"
+  assert_grep "fixed pause between model turns" "$TMP_ROOT/pacing-on.txt" \
+    "model-delay contract did not carry the pacing requirement"
+  pass "model-delay pacing contract is gated on config/model-delay and names the skill rule"
+}
+
 test_worker_role_names_skill_and_fallback_file
+test_model_delay_pacing_contract_gate
 
 echo "all fm-dod-lib tests passed"

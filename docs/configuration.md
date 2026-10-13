@@ -11,7 +11,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
 | Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
-| Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
+| Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), [Calm preference](#calm-preference-configcalm), and [Model-delay preference](#model-delay-preference-configmodel-delay) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
@@ -157,6 +157,30 @@ The Pi extension reloads this preference on every Pi `session_start`, including 
 
 The Claude Code mod reloads it on every `session.start`, including same-process session replacement.
 It also loads the preference lazily before any row that can draw ahead of that event, including during `claude --continue` restoration.
+This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
+
+## Model-delay preference (config/model-delay)
+
+The local, gitignored `config/model-delay` preference under the effective Firstmate home switches the model-call pacing mode on or off.
+It resolves the home in the same order the Calm preference does: `FM_HOME`, `FM_ROOT_OVERRIDE`, then the tracked code root derived from the reader's own path under it, while `FM_CONFIG_OVERRIDE` selects the config directory directly for tests and specialized setup.
+The [Model-delay mode](model-delay.md) page owns the captain-facing behavior; [`.agents/skills/model-delay/SKILL.md`](../.agents/skills/model-delay/SKILL.md) owns the pacing rule.
+
+### Values and default
+
+| Value or file state | Result |
+| --- | --- |
+| `on` | Model-delay on. |
+| `off` | Model-delay off. |
+| Absent, unreadable, or unrecognized | Defaults to off. |
+
+Unlike Calm, Model-delay has no legacy value.
+
+### Saving and reloading the preference
+
+On Pi, the `/model-delay` command saves the new choice before changing live presentation, exactly as `/calm` does.
+A failed write leaves the current choice unchanged and is not reported as a saved preference.
+The Pi extension reloads this preference on every Pi `session_start`, including startup, new, resume, fork, and reload reasons.
+A captain may also write the file directly on any harness.
 This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
 
 ## Pi supervision branch

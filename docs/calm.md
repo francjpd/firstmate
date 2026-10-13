@@ -13,6 +13,7 @@ This page is for operators who turn Calm on and need to know what it hides and k
 Calm is off by default.
 The last `/calm` choice persists for the effective Firstmate home across session starts and resumes on either harness.
 Both harnesses keep that choice in the one shared preference file that [`configuration.md`](configuration.md#calm-preference-configcalm) owns.
+Calm is presentation only; [`model-delay.md`](model-delay.md) documents the sibling pacing mode and its sandglass indicator.
 
 ## Shared preservation rule for assistant text
 

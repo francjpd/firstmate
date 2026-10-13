@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# Behavior tests for Firstmate's model-delay pacing mode: the skill that owns the
+# pacing rule, the config/model-delay preference and its /model-delay toggle, and the
+# sandglass indicator drawn beside the Calm working boat on Pi.
+set -u
+
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+TMP_ROOT=$(fm_test_tmproot fm-model-delay)
+SKILL="$ROOT/.agents/skills/model-delay/SKILL.md"
+DOC="$ROOT/docs/model-delay.md"
+CONFIG_DOC="$ROOT/docs/configuration.md"
+EXT="$ROOT/.pi/extensions/fm-calm.ts"
+ASSISTANT_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+PRESERVATION="$ROOT/.pi/extensions/lib/fm-calm-preservation.ts"
+OPERATIONAL_USER_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+PENDING_OPERATIONAL_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-pending-operational-layout.ts"
+VISIBILITY="$ROOT/.pi/extensions/lib/fm-calm-visibility.ts"
+WORKING_SHIP="$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts"
+WORKING_SHIP_SPRITE="$ROOT/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
+PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
+PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
+
+# The skill is the one owner of the pacing rule: its always-loaded description must
+# carry the load trigger, and its body must name the fixed interval. The launch brief
+# only points at it, so the interval must not need to appear a second time.
+test_model_delay_skill_contract() {
+  [ -f "$SKILL" ] || fail "model-delay skill is missing at $SKILL"
+  assert_grep "name: model-delay" "$SKILL" "model-delay skill has no name frontmatter"
+  assert_grep "description:" "$SKILL" "model-delay skill has no description frontmatter"
+  assert_grep "Load when" "$SKILL" "model-delay skill description states no load trigger"
+  assert_grep "model-delay on" "$SKILL" "model-delay skill trigger does not name its on state"
+  assert_grep "pause 45 seconds between model turns" "$SKILL" \
+    "model-delay skill does not fix the pacing interval"
+  assert_grep 'sleep 45' "$SKILL" "model-delay skill names no way to enforce the pause"
+  pass "model-delay skill exists and its trigger, interval, and enforcement are stated"
+}
+
+# The mode must be discoverable where Calm is documented, and the preference contract
+# must be routed to its own owner rather than duplicated in the skill.
+test_model_delay_documentation_contract() {
+  [ -f "$DOC" ] || fail "model-delay documentation is missing at $DOC"
+  assert_grep "config/model-delay" "$DOC" "model-delay page does not name the preference"
+  assert_grep "../.agents/skills/model-delay/SKILL.md" "$DOC" "model-delay page does not point at the skill owner"
+  assert_grep "## Model-delay preference (config/model-delay)" "$CONFIG_DOC" \
+    "configuration.md has no model-delay preference section"
+  assert_grep "model-delay.md" "$CONFIG_DOC" "configuration.md does not link the model-delay page"
+  assert_grep "model-delay.md" "$ROOT/docs/calm.md" "calm.md does not link its model-delay sibling"
+  pass "model-delay is documented with the preference owned by configuration.md"
+}
+
+# Load the real extension against a fake Pi and assert the sandglass appears only while
+# the preference is on, joins the Calm boat when both modes are on, and that /model-delay
+# persists the choice and repaints the working row.
+test_pi_model_delay_indicator_and_toggle() {
+  local fixture out status version
+  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    echo "skip: node or npm not found for the Pi model-delay indicator test"
+    return 0
+  fi
+  if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
+    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    return 0
+  fi
+  version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version" 2>/dev/null || printf 'unknown')
+
+  fixture="$TMP_ROOT/pi-indicator"
+  mkdir -p "$fixture/project/.pi/extensions/lib" "$fixture/project/node_modules/@earendil-works" "$fixture/home/config"
+  cp "$EXT" "$fixture/project/.pi/extensions/fm-calm.ts"
+  cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$fixture/project/.pi/extensions/lib/fm-calm-preservation.ts"
+  cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+  cp "$PENDING_OPERATIONAL_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-pending-operational-layout.ts"
+  cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
+  cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
+  ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
+  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
+  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/project/node_modules/typebox"
+  printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
+
+  out=$(cd "$fixture/project" && \
+    EXT="$fixture/project/.pi/extensions/fm-calm.ts" \
+    FM_HOME="$fixture/home" \
+    PI_PACKAGE_DIR="$PI_PACKAGE_DIR" \
+    node --input-type=module 2>&1 <<'JS'
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const { CALM_WORKING_SHIP_WIDGET_KEY } = await import(
+  `${pathToFileURL(`${process.cwd()}/.pi/extensions/lib/fm-calm-working-ship.ts`).href}?widget=${Date.now()}`
+);
+const SANDGLASS = "\u29d7";
+const HULL = "\u2572\u2581\u2581\u2581\u2571";
+
+const handlers = new Map();
+let calmCommand;
+let modelDelayCommand;
+const pi = {
+  events: { emit() {}, on() {} },
+  on(event, handler) {
+    const existing = handlers.get(event) ?? [];
+    existing.push(handler);
+    handlers.set(event, existing);
+  },
+  registerCommand(name, command) {
+    if (name === "calm") calmCommand = command;
+    if (name === "model-delay") modelDelayCommand = command;
+  },
+  registerEntryRenderer() {},
+  registerTool() {},
+  getAllTools() {
+    return [];
+  },
+};
+const extension = await import(`${pathToFileURL(process.env.EXT).href}?modelDelay=${Date.now()}`);
+extension.default(pi);
+if (!modelDelayCommand) throw new Error("the extension did not register /model-delay");
+
+const tui = { requestRender() {} };
+const ui = {
+  workingVisible: [],
+  widgets: new Map(),
+  setWorkingVisible(visible) {
+    this.workingVisible.push(visible);
+  },
+  setWidget(key, content) {
+    const existing = this.widgets.get(key);
+    if (existing?.dispose) existing.dispose();
+    this.widgets.delete(key);
+    if (content === undefined) return;
+    this.widgets.set(key, typeof content === "function" ? content(tui, {}) : content);
+  },
+  getEditorText: () => "",
+  getToolsExpanded: () => false,
+  onTerminalInput: () => () => {},
+  setHiddenThinkingLabel() {},
+  setStatus() {},
+  setToolsExpanded() {},
+  notify() {},
+};
+const ctx = { ui };
+const fire = async (event, payload = {}) => {
+  for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
+};
+const widget = () => ui.widgets.get(CALM_WORKING_SHIP_WIDGET_KEY);
+const preference = () => {
+  try {
+    return readFileSync(`${process.env.FM_HOME}/config/model-delay`, "utf8").trim();
+  } catch {
+    return "";
+  }
+};
+
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+const visibleWidth = (row) => row.replace(/\x1b\[[0-9;]*m/g, "").length;
+
+// A session that starts with the preference absent leaves the stock working row alone.
+await fire("session_start", { reason: "startup" });
+ui.workingVisible.length = 0;
+await fire("agent_start");
+assert(ui.widgets.size === 0, "a model-delay-off, calm-off run installed a working widget");
+assert(ui.workingVisible.length === 0, "a model-delay-off, calm-off run touched the stock working row");
+
+// Turning model-delay on during the run persists the choice and shows the sandglass.
+await modelDelayCommand.handler("", ctx);
+assert(preference() === "on", `/model-delay did not persist "on" (saw "${preference()}")`);
+const sandglassWidget = widget();
+assert(!!sandglassWidget, "model-delay on did not install a working widget");
+assert(ui.workingVisible[ui.workingVisible.length - 1] === false, "model-delay on did not hide the stock working row");
+const sandglassRows = sandglassWidget.render(40);
+assert(sandglassRows.length === 1, `a sandglass-only widget rendered ${sandglassRows.length} rows`);
+assert(sandglassRows[0].includes(SANDGLASS), "the model-delay widget rendered no sandglass");
+assert(!sandglassRows[0].includes(HULL), "the sandglass-only widget rendered the boat without Calm");
+
+// Calm on top of model-delay shows the boat with the sandglass beside it in one widget.
+await calmCommand.handler("", ctx);
+const bothWidget = widget();
+assert(bothWidget === sandglassWidget, "turning Calm on replaced the shared working widget");
+const bothRows = bothWidget.render(40);
+assert(bothRows.length === 2, `Calm plus model-delay rendered ${bothRows.length} rows instead of two`);
+assert(bothRows[1].includes(HULL), "Calm plus model-delay lost the boat");
+assert(bothRows[1].includes(SANDGLASS), "Calm plus model-delay lost the sandglass");
+assert(
+  visibleWidth(bothRows[bothRows.length - 1]) === 40,
+  `the combined boat row was not full width: ${visibleWidth(bothRows[bothRows.length - 1])}`,
+);
+
+// Turning model-delay off drops the sandglass but, with Calm still on, keeps the boat.
+await modelDelayCommand.handler("", ctx);
+assert(preference() === "off", `/model-delay did not persist "off" (saw "${preference()}")`);
+const boatOnly = widget();
+assert(!!boatOnly, "turning model-delay off with Calm on cleared the working widget");
+const boatRows = boatOnly.render(40);
+assert(boatRows.length === 2, "Calm-only rendering changed row count");
+assert(!boatRows[1].includes(SANDGLASS), "turning model-delay off kept the sandglass");
+assert(boatRows[1].includes(HULL), "turning model-delay off removed the Calm boat");
+
+// A fresh session reloads the persisted preference: on shows the indicator again.
+await modelDelayCommand.handler("", ctx);
+await fire("session_start", { reason: "new" });
+await fire("agent_start");
+const reloaded = widget();
+assert(!!reloaded, "a persisted model-delay=on session installed no working widget");
+const reloadedRows = reloaded.render(40);
+assert(reloadedRows.length === 2, `a reloaded Calm plus model-delay session rendered ${reloadedRows.length} rows`);
+assert(reloadedRows[1].includes(SANDGLASS), "a reloaded model-delay=on session lost the sandglass");
+await fire("agent_settled");
+assert(ui.widgets.size === 0, "settling left a residual working widget");
+assert(ui.workingVisible[ui.workingVisible.length - 1] === true, "settling did not restore the stock working row");
+JS
+  )
+  status=$?
+  [ "$status" -eq 0 ] || fail "Pi model-delay indicator test failed: $out"
+  [ -z "$out" ] || fail "Pi model-delay indicator test printed output: $out"
+  pass "Pi shows exactly one working widget: sandglass alone while model-delay is on, boat plus sandglass with Calm, boat alone after model-delay off, and reloads the persisted choice (Pi $version)"
+}
+
+test_model_delay_skill_contract
+test_model_delay_documentation_contract
+test_pi_model_delay_indicator_and_toggle
+
+echo "# all fm-model-delay tests passed"

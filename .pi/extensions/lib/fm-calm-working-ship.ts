@@ -79,16 +79,37 @@ export function createCalmWorkingShipAnimation(): CalmWorkingShipAnimation {
 }
 
 /**
+ * The Model-delay indicator drawn beside the boat while that mode is on.
+ * U+29D7 BLACK HOURGLASS is a sandglass and, unlike the wide U+231B HOURGLASS, is one
+ * terminal column, so it never breaks the working row's width math. One glyph plus a
+ * one-cell separator, kept in the same working widget rather than a parallel one.
+ * docs/model-delay.md owns the captain-facing contract.
+ */
+export const MODEL_DELAY_SANDGLASS = "⧗";
+const MODEL_DELAY_SANDGLASS_SEGMENT = ` ${MODEL_DELAY_SANDGLASS}`;
+const MODEL_DELAY_SANDGLASS_COLUMNS = 2;
+
+export type CalmWorkingWidgetOptions = {
+  /** Draw the boat; defaults to true so a lone caller is unchanged. */
+  ship?: () => boolean;
+  /** Draw the Model-delay sandglass beside the boat; defaults to false. */
+  sandglass?: () => boolean;
+};
+
+/**
  * Build the temporary Calm working widget bound to one caller-owned animation.
  * Pi disposes the previous component before installing a replacement under the same
  * key and when it clears extension widgets, so the single scheduler driving both
  * cadences cannot outlive the widget or duplicate. Disposing freezes the shared
  * animation in place; the next widget bound to the same animation resumes without
  * applying hidden wall time.
+ * The optional `ship` and `sandglass` providers are read on every frame, so a live
+ * preference toggle only needs a repaint, never a widget reinstall.
  */
 export function createCalmWorkingShipWidget(
   tui: TUI,
   animation: CalmWorkingShipAnimation = createCalmWorkingShipAnimation(),
+  options: CalmWorkingWidgetOptions = {},
 ): Component & { dispose(): void } {
   let disposed = false;
   const timer = setInterval(() => {
@@ -99,8 +120,26 @@ export function createCalmWorkingShipWidget(
   // The animation must never keep Pi's process alive on its own.
   timer.unref?.();
 
+  const renderRows = (width: number): string[] => {
+    const showShip = options.ship ? options.ship() : true;
+    const showSandglass = options.sandglass ? options.sandglass() : false;
+    if (!showSandglass) return showShip ? animation.render(width) : [];
+    if (width <= 0) return [];
+    if (!showShip) return [`${MODEL_DELAY_SANDGLASS}${' '.repeat(Math.max(0, width - 1))}`];
+    // Reserve the sandglass columns on the boat row so the indicator sits beside the
+    // boat instead of wrapping. The sail row is deliberately shorter than the boat's
+    // water row, exactly as the lone boat draws it; only the boat row carries width.
+    const shipWidth = Math.max(1, width - MODEL_DELAY_SANDGLASS_COLUMNS);
+    const rows = animation.render(shipWidth);
+    if (rows.length === 0) return [];
+    return [
+      ...rows.slice(0, -1),
+      rows[rows.length - 1] + MODEL_DELAY_SANDGLASS_SEGMENT,
+    ];
+  };
+
   return {
-    render: (width) => (disposed ? [] : animation.render(width)),
+    render: (width) => (disposed ? [] : renderRows(width)),
     // Every frame is rebuilt from fixed standard ANSI codes, so there is no cache.
     invalidate: () => {},
     dispose: () => {

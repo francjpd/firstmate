@@ -135,6 +135,31 @@ EOF
   printf "If the \`firstmate-coding-guidelines\` skill name does not resolve in this session, read \`%s/.agents/skills/firstmate-coding-guidelines/SKILL.md\` instead.\n" "$root"
 }
 
+# The launch-brief section that carries Model-delay pacing to a ship or scout worker.
+# bin/fm-spawn.sh is its one emitter, placing it in the launch-brief overlay right
+# after fm_brief_worker_role. It prints nothing unless the home's config/model-delay
+# preference reads exactly "on", so a disabled mode changes no brief. The skill
+# .agents/skills/model-delay/SKILL.md owns the pacing rule, including the fixed
+# interval; this section only points at it, because a worker in another project's
+# worktree cannot discover that skill through .agents/skills, and it gives the same
+# absolute-path fallback fm_brief_worker_role uses for firstmate-coding-guidelines.
+# The config argument is the resolved config directory (FM_CONFIG_OVERRIDE or
+# $FM_HOME/config), and the code root is the Firstmate checkout that holds the skill.
+# Both are empty for callers that opt out, which suppress the section.
+fm_model_delay_pacing_contract() {  # <config-dir> <code-root>
+  local config=$1 root=$2
+  [ -n "$config" ] || return 0
+  [ -f "$config/model-delay" ] || return 0
+  [ "$(tr -d '[:space:]' <"$config/model-delay" 2>/dev/null)" = on ] || return 0
+  cat <<'EOF'
+
+# Current model pacing contract
+This section supersedes every earlier brief instruction about model-call pacing.
+This home has model-delay on: load `.agents/skills/model-delay/SKILL.md` before your first model turn and follow its fixed pause between model turns for the whole task.
+EOF
+  printf "If that skill name does not resolve in this session, read \`%s/.agents/skills/model-delay/SKILL.md\` and follow it instead.\n" "$root"
+}
+
 # Closed-set gate shared by every forge-aware renderer and bin/fm-brief.sh, so a
 # caller cannot reach a half-rendered contract. local-only is refused rather than
 # rendered with an inert annotation: it publishes nothing, and its landing

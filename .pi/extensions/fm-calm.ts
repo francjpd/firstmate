@@ -11,6 +11,8 @@
 // independently with a diagnostic (see installCalmPresentationAdapter below) if a future
 // Pi removes it; Pi still exposes no global renderer for arbitrary built-in or custom rows.
 // docs/configuration.md owns the home-local Calm preference contract.
+// The same extension also switches the Model-delay pacing mode and draws its sandglass
+// beside the Calm boat; docs/model-delay.md owns that captain-facing contract.
 //
 // Pi has one first-registration-wins ToolDefinition per tool name, with no merge or
 // unregister operation. Keep Calm-off registration empty; keep Calm-on load-time
@@ -45,7 +47,7 @@ import {
   createReadToolDefinition,
   createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Container, getKeybindings, type Component } from "@earendil-works/pi-tui";
+import { Box, Container, getKeybindings, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { installCalmAssistantLayout } from "./lib/fm-calm-assistant-layout.ts";
 import { installCalmOperationalUserLayout } from "./lib/fm-calm-operational-user-layout.ts";
@@ -134,6 +136,12 @@ export default function (pi: ExtensionAPI) {
   // from turns or tool calls, so the boat never flickers between tool calls, automatic
   // continuations, retries, or compaction that stay inside the same run.
   let agentRunActive = false;
+  // Whether the home's config/model-delay preference is on. A live toggle repaints
+  // the working widget rather than reinstalling it; see the widget providers below.
+  let modelDelayActive = false;
+  // The TUI bound to the live working widget, so a live Model-delay toggle can request
+  // one repaint without disposing and reinstalling the widget.
+  let workingTui: TUI | undefined;
   let workingShipShown = false;
   let workingShipWidgetDisposed = false;
   // One animation instance per extension lifetime. Hiding the working widget freezes
@@ -149,13 +157,17 @@ export default function (pi: ExtensionAPI) {
     ui: ExtensionUIContext,
     forceStockVisibility = false,
   ): void => {
-    const showShip = agentRunActive && calmPresentationIsActive();
-    if (showShip !== workingShipShown) {
-      workingShipShown = showShip;
-      if (showShip) {
+    const showWorking = agentRunActive && (calmPresentationIsActive() || modelDelayActive);
+    if (showWorking !== workingShipShown) {
+      workingShipShown = showWorking;
+      if (showWorking) {
         ui.setWidget(CALM_WORKING_SHIP_WIDGET_KEY, (tui) => {
+          workingTui = tui;
           workingShipWidgetDisposed = false;
-          const widget = createCalmWorkingShipWidget(tui, workingShipAnimation);
+          const widget = createCalmWorkingShipWidget(tui, workingShipAnimation, {
+            ship: () => calmPresentationIsActive(),
+            sandglass: () => modelDelayActive,
+          });
           const dispose = widget.dispose;
           widget.dispose = () => {
             workingShipWidgetDisposed = true;
@@ -168,7 +180,7 @@ export default function (pi: ExtensionAPI) {
         ui.setWidget(CALM_WORKING_SHIP_WIDGET_KEY, undefined);
         ui.setWorkingVisible(true);
       }
-    } else if (forceStockVisibility && !showShip && !workingShipWidgetDisposed) {
+    } else if (forceStockVisibility && !showWorking && !workingShipWidgetDisposed) {
       ui.setWorkingVisible(true);
     }
   };
@@ -176,6 +188,7 @@ export default function (pi: ExtensionAPI) {
   const fmHome = process.env.FM_HOME || process.env.FM_ROOT_OVERRIDE || root;
   const configDirectory = process.env.FM_CONFIG_OVERRIDE || resolve(fmHome, "config");
   const calmPreferencePath = resolve(configDirectory, "calm");
+  const modelDelayPreferencePath = resolve(configDirectory, "model-delay");
   // "max" is the legacy value written by the removed third presentation level, whose
   // behavior is now ordinary Calm; a home upgraded from it restores as on rather than
   // dropping to off. docs/configuration.md owns the persisted value schema.
@@ -198,6 +211,32 @@ export default function (pi: ExtensionAPI) {
         mode: 0o600,
       });
       renameSync(temporaryPath, calmPreferencePath);
+    } finally {
+      rmSync(temporaryPath, { force: true });
+    }
+  };
+  // Model-delay mirrors the Calm preference exactly: "on" enables it, and every other
+  // state including an absent or unreadable file defaults to off. A failed write throws
+  // before the live value changes, so the current choice is left unchanged.
+  const loadModelDelayPreference = (): boolean => {
+    let stored: string;
+    try {
+      stored = readFileSync(modelDelayPreferencePath, "utf8").trim();
+    } catch {
+      return false;
+    }
+    return stored === "on";
+  };
+  const persistModelDelayPreference = (active: boolean): void => {
+    mkdirSync(dirname(modelDelayPreferencePath), { recursive: true });
+    const temporaryPath = `${modelDelayPreferencePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporaryPath, active ? "on\n" : "off\n", {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      renameSync(temporaryPath, modelDelayPreferencePath);
     } finally {
       rmSync(temporaryPath, { force: true });
     }
@@ -430,6 +469,7 @@ export default function (pi: ExtensionAPI) {
     calmToolRowRepaints.clear();
     exportRendering = false;
     setCalmPresentation(loadCalmPreference());
+    modelDelayActive = loadModelDelayPreference();
     setCalmStockExportRendering(false);
     publishPresentationState();
     agentRunActive = false;
@@ -509,6 +549,21 @@ export default function (pi: ExtensionAPI) {
       const expanded = ctx.ui.getToolsExpanded();
       ctx.ui.setToolsExpanded(!expanded);
       ctx.ui.setToolsExpanded(expanded);
+    },
+  });
+
+  // The Model-delay toggle mirrors /calm: save before changing live presentation, and
+  // leave the choice unchanged when the write fails. The pacing rule itself lives in
+  // .agents/skills/model-delay/SKILL.md; this only switches the preference and repaints
+  // the working widget that draws the sandglass. docs/model-delay.md owns the contract.
+  pi.registerCommand("model-delay", {
+    description: "Toggle Firstmate's model-call pacing mode for the shared flaky endpoint.",
+    handler: async (_args, ctx) => {
+      const active = !modelDelayActive;
+      persistModelDelayPreference(active);
+      modelDelayActive = active;
+      applyWorkingPresentation(ctx.ui, true);
+      workingTui?.requestRender();
     },
   });
 }
