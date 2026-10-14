@@ -122,7 +122,16 @@ test_agy_claims_no_inherited_launcher_marker() {
   local fakebin out
   # AGENT=1 was observed on a live agy TUI as inherited launcher state, so it
   # must never promote to an agy identity the way GEMINI_CLI does for gemini.
-  out=$(AGENT=1 "$HARNESS")
+  fakebin=$(fm_fakebin "$TMP_ROOT/anc-agent1")
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *'ppid='*) printf '%s\n' 1 ;;
+  *) printf '%s\n' bash ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  out=$(AGENT=1 PATH="$fakebin:$PATH" "$HARNESS")
   [ "$out" != agy ] \
     || fail "an inherited AGENT=1 must never claim the agy identity, got '$out'"
   # Drive the hazard the other way: agy does not clear an inherited CLAUDECODE,
@@ -200,6 +209,20 @@ esc to cancel                                                           Gemini 3
 ? for shortcuts                                                         Gemini 3.8 Flash · low')
   [ "$idle" = "unknown agy-regex" ] || fail "a scrolled-out marker must classify unknown, got '$idle'"
   pass "fm-busy-lib: agy classifies busy on its marker and unknown without it"
+}
+
+test_untrusted_stale_record_does_not_mask_a_live_agy_pane() {
+  local statedir busy idle gen
+  statedir="$TMP_ROOT/untrusted-stale"; mkdir -p "$statedir"
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$statedir" agy-case-stale)
+  "$ROOT/bin/fm-busy-event.sh" apply "$statedir" agy-case-stale busy --gen "$gen" --source pi-ext --event agent-start
+  busy=$(fm_busy_classify tmux fake:win agy agy-case-stale "$statedir" 'turn running
+esc to cancel                                                           Gemini 3.8 Flash · low')
+  [ "$busy" = "busy agy-regex" ] || fail "an untrusted stale record must not mask a live agy pane, got '$busy'"
+  idle=$(fm_busy_classify tmux fake:win agy agy-case-stale "$statedir" 'reply landed
+? for shortcuts                                                         Gemini 3.8 Flash · low')
+  [ "$idle" = "unknown agy-regex" ] || fail "an untrusted stale record must not force busy when idle, got '$idle'"
+  pass "fm-busy-lib: an untrusted stale record does not mask a live agy pane"
 }
 
 test_agy_tmux_names_the_native_binary_an_agent() {
@@ -479,12 +502,18 @@ fake_path_trusted() {
     "$FM_FAKE_AGY_SETTINGS" "$FM_FAKE_PANE_PATH"
 }
 case "$*" in
+  *"#{pane_current_command}"*) printf 'bash\n'; exit 0 ;;
   *"#{pane_current_path}"*) printf '%s\n' "$FM_FAKE_PANE_PATH"; exit 0 ;;
   *"#{cursor_y}"*) printf '1\n'; exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    if [ -n "${FM_FAKE_TMUX_WINDOWS:-}" ]; then
+      printf '%s\n' "$FM_FAKE_TMUX_WINDOWS"
+    fi
+    exit 0
+    ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
   send-keys)
     literal=
@@ -596,10 +625,20 @@ BASE_PATH=${FM_TEST_BASE_PATH:-$NODE_BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin}
 run_agy_spawn() {
   local case_dir=$1 home=$2 proj=$3 wt=$4 fakebin=$5 id=$6
   shift 6
+  local -a spawn_args
+  local fake_windows=""
+  if [ "${1:-}" = --relaunch ]; then
+    spawn_args=("$id" --harness agy "$@")
+    fake_windows="${FM_FAKE_TMUX_WINDOWS:-fm-$id}"
+  else
+    spawn_args=("$id" "$proj" --harness agy --mode no-mistakes --yolo off "$@")
+    fake_windows="${FM_FAKE_TMUX_WINDOWS:-}"
+  fi
   HOME="$home" FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_FAKE_TMUX_WINDOWS="$fake_windows" \
     FM_FAKE_LAUNCH_LOG="$case_dir/launch.log" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
     FM_FAKE_AGY_STATE="$case_dir/agy.state" \
@@ -612,7 +651,7 @@ run_agy_spawn() {
     FM_FAKE_AGY_ANSWER="${FM_FAKE_AGY_ANSWER:-works}" \
     FM_AGY_READY_POLLS=4 FM_AGY_POLL_INTERVAL=0 FM_AGY_MODELS_TIMEOUT=${FM_AGY_MODELS_TIMEOUT:-1} \
     PATH="$fakebin:$BASE_PATH" \
-    "$SPAWN" "$id" "$proj" --harness agy --mode no-mistakes --yolo off "$@" 2>&1
+    "$SPAWN" "${spawn_args[@]}" 2>&1
 }
 
 test_agy_launch_carries_the_brief_with_model_effort_and_autonomy() {
@@ -887,6 +926,51 @@ test_agy_spawn_arms_no_busy_wiring() {
   pass "fm-spawn: agy arms no busy wiring and writes no sidecar"
 }
 
+test_pi_relaunch_onto_agy_retires_busy_state_and_busy_gen() {
+  local id rec out rc store
+  id="agy-relaunch-from-pi-$$"
+  rec=$(make_agy_spawn_case relaunch-pi "$id")
+  read_agy_spawn_record "$rec"
+  store="$HOME_DIR/.gemini/antigravity-cli/settings.json"
+
+  # Seed prior task metadata as a pi worker
+  cat > "$HOME_DIR/state/$id.meta" <<EOF
+window=fake:fm-$id
+endpoint_task_id=$id
+worktree=$WT_DIR
+project=$PROJ_DIR
+harness=pi
+kind=ship
+mode=no-mistakes
+yolo=off
+model=default
+effort=default
+EOF
+
+  # Seed the prior pi incarnation's wiring artifacts and semantic busy state
+  touch "$HOME_DIR/state/$id.pi-ext.ts"
+  touch "$HOME_DIR/state/$id.busy-state"
+  touch "$HOME_DIR/state/$id.busy-gen"
+
+  # Set initial fake agy pane state to launched so Enter transitions to busy
+  printf 'launched\n' > "$CASE_DIR/agy.state"
+
+  out=$(run_agy_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" \
+    --relaunch --model gemini-3.8-flash-low)
+  rc=$?
+  expect_code 0 "$rc" "a pi->agy relaunch spawn should succeed: $out"
+  assert_contains "$out" "spawned $id harness=agy" "agy relaunch did not report success"
+  [ ! -e "$HOME_DIR/state/$id.pi-ext.ts" ] \
+    || fail "the retired pi incarnation's extension was not cleared on relaunch to agy"
+  [ ! -e "$HOME_DIR/state/$id.busy-state" ] \
+    || fail "the retired pi incarnation's busy-state record was not cleared on relaunch to agy"
+  [ ! -e "$HOME_DIR/state/$id.busy-gen" ] \
+    || fail "the retired pi incarnation's busy-gen sidecar was not cleared on relaunch to agy"
+  [ "$(cat "$CASE_DIR/agy.state")" = busy ] \
+    || fail "the relaunch reported success before the pane reached busy state"
+  pass "fm-spawn: pi->agy relaunch retires prior pi wiring and confirms agy busy"
+}
+
 test_agy_ancestry_detects_the_native_command_name
 test_agy_ancestry_rejects_unrelated_mentions
 test_agy_claims_no_inherited_launcher_marker
@@ -894,6 +978,7 @@ test_agy_control_mechanics_are_the_verified_ones
 test_agy_busy_tail_needs_the_pinned_status_row
 test_agy_busy_signatures_are_harness_scoped
 test_agy_classify_reports_unknown_when_the_marker_scrolls_out
+test_untrusted_stale_record_does_not_mask_a_live_agy_pane
 test_agy_tmux_names_the_native_binary_an_agent
 test_herdr_done_with_live_registry_stays_live
 test_herdr_registered_status_over_a_shell_only_pane_is_stale_not_live
@@ -917,3 +1002,4 @@ test_agy_pre_trusted_path_that_never_turns_busy_fails_the_spawn
 test_agy_missing_binary_refuses_before_pane_creation
 test_agy_secondmate_is_refused
 test_agy_spawn_arms_no_busy_wiring
+test_pi_relaunch_onto_agy_retires_busy_state_and_busy_gen

@@ -389,7 +389,11 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id> [ki
       fi
       ;;
     opencode) printf '%s\n' "$wt/.opencode/plugins/fm-busy-state.js" ;;
-    pi|pi-signed) printf '%s\n' "$state/$id.pi-ext.ts" ;;
+    pi|pi-signed)
+      printf '%s\n' "$state/$id.pi-ext.ts"
+      printf '%s\n' "$state/$id.busy-state"
+      printf '%s\n' "$state/$id.busy-gen"
+      ;;
     omp) printf '%s\n' "$state/$id.omp-ext.ts" ;;
     grok)
       printf '%s\n' "$wt/.fm-grok-turnend"

@@ -1064,15 +1064,18 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       else
         printf '%s %s' "$r_state" "$r_source"
       fi
-    else
+      return 0
+    elif [ "$harness" != agy ]; then
       printf 'unknown source-mismatch'
+      return 0
     fi
-    return 0
   fi
   case "$out" in
     malformed|gen-mismatch)
-      printf 'unknown %s' "$out"
-      return 0
+      if [ "$harness" != agy ]; then
+        printf 'unknown %s' "$out"
+        return 0
+      fi
       ;;
   esac
   # No record at all. A native herdr busy verdict is semantic enough to trust

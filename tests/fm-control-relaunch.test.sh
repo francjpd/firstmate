@@ -648,6 +648,28 @@ test_harness_switch_moves_the_record_and_clears_prior_wiring() {
   pass "fm-control relaunch: switching harness is one ordinary relaunch, and the old wiring goes with the old agent"
 }
 
+test_harness_switch_from_pi_clears_busy_state_and_busy_gen() {
+  local dir out rc
+  dir=$(new_case pi-switch rl_pi1)
+  add_ship_task "$dir" rl_pi1 pi
+  printf 'pi' > "$dir/fake/command"
+  touch "$dir/home/state/rl_pi1.pi-ext.ts"
+  touch "$dir/home/state/rl_pi1.busy-state"
+  touch "$dir/home/state/rl_pi1.busy-gen"
+  printf 'codex' > "$dir/fake/becomes"
+  out=$(run_control "$dir" rl_pi1 relaunch --harness codex --note "switching from pi to codex"); rc=$?
+  expect_code 0 "$rc" "a pi->codex harness switch should succeed"$'\n'"$out"
+  assert_contains "$out" "harness=codex from=pi" "the outcome should name both harnesses"
+  [ "$(meta_field "$dir" rl_pi1 harness)" = codex ] || fail "the record should follow the switch"
+  [ ! -e "$dir/home/state/rl_pi1.pi-ext.ts" ] \
+    || fail "the previous pi harness's extension must be cleared on a switch"
+  [ ! -e "$dir/home/state/rl_pi1.busy-state" ] \
+    || fail "the previous pi harness's busy-state record must be cleared on a switch"
+  [ ! -e "$dir/home/state/rl_pi1.busy-gen" ] \
+    || fail "the previous pi harness's busy-gen record must be cleared on a switch"
+  pass "fm-control relaunch: switching from pi clears pi-ext.ts, busy-state, and busy-gen"
+}
+
 test_harness_switch_does_not_carry_the_old_profile_axes() {
   local dir out rc
   dir=$(new_case profile rl5)
@@ -2541,6 +2563,7 @@ test_disabled_relaunch_clears_prior_trace_context
 test_relaunch_appends_the_progress_note_to_the_instructions
 test_relaunch_requires_a_note_for_a_ship_task
 test_harness_switch_moves_the_record_and_clears_prior_wiring
+test_harness_switch_from_pi_clears_busy_state_and_busy_gen
 test_harness_switch_does_not_carry_the_old_profile_axes
 test_harness_switch_resolves_a_prefixed_recorded_harness
 test_prefixed_recorded_harness_requires_explicit_replacement
