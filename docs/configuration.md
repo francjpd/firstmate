@@ -1170,6 +1170,26 @@ A malformed or unreadable file refuses every fresh ship or scout spawn until it 
 Firstmate cannot see which part of a worker's life uses the resource, so the number bounds whole workers from launch to handoff, and the tightest resource every worker needs should decide it.
 [`bin/fm-project-capacity-lib.sh`](../bin/fm-project-capacity-lib.sh) owns the file format, what holds a place, and why concurrent spawns cannot both take the last one.
 
+## Harness capacity (config/harness-capacity)
+
+The optional local, gitignored `config/harness-capacity` tells Firstmate how many workers a harness can run at once on this machine, for an adapter whose model or provider concurrency is bounded.
+Without it, dispatch stays uncapped as `AGENTS.md` section 7 describes, and multiple dispatches can exceed a subscription's concurrent-worker limit or local budget.
+The file lives in the machine's root Firstmate home, so every local secondmate home reads the same limit, and it holds one line per harness:
+
+```text
+# allow at most two concurrent agy workers
+agy 2
+```
+
+The name is a verified adapter name (`claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|devin`), and the number, the last field on the line, is a positive integer of at most six digits.
+Blank lines are ignored, and the same comment rules as `config/project-capacity` apply: `#` followed by whitespace is a comment, bare `#` is a comment, and `#` with a non-integer last field is a comment.
+A place is held by every ordinary (`kind != secondmate`) ship or scout in the root home or any local secondmate home registered under it whose recorded `harness=` matches, until its ready PR is recorded or it is cleaned up; a local-only ship or a scout holds its place until cleanup.
+A relaunch replaces a worker that already counts, and a secondmate is a persistent home rather than a worker, so both are exempt.
+Remote homes are never walked, because their workers run on another machine.
+When every place is held, `bin/fm-spawn.sh` launches nothing, creates no record, leaves the backlog item queued, prints one `deferred:` line naming the holders, and exits 75, so Firstmate dispatches the item again once a place frees.
+A malformed or unreadable file refuses every fresh ship or scout spawn until it is fixed, rather than guessing the intended limit, and so does a local home's state directory or task record that cannot be read while counting a capped harness's holders.
+[`bin/fm-harness-capacity-lib.sh`](../bin/fm-harness-capacity-lib.sh) owns the file format, what holds a place, and the admission verdict.
+
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
 `config/crew-dispatch.json` is an optional local, gitignored file containing natural-language rules that firstmate reads before dispatching a crewmate or scout.

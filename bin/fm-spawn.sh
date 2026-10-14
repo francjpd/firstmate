@@ -184,14 +184,16 @@
 #   fm_firstmate_root_home resolves, so a home seeded from another machine anchors
 #   that lock itself rather than failing to resolve one;
 #   contention refuses rather than waits.
-#   Project capacity: when this machine declares how many workers a project
-#   admits at once (config/project-capacity; bin/fm-project-capacity-lib.sh owns
-#   the declaration, what holds a place, and the race argument), a fresh ship or
-#   scout spawn counts the places already held while holding that same
-#   project-identity lock - taken on every backend whenever the declaration caps
-#   any project, Orca included, because an uncapped clone's worker still holds a
-#   place for a capped clone of the same origin - and holds it through metadata
-#   publication. A spawn that finds
+#   Project and harness capacity: when this machine declares how many workers a
+#   project admits at once (config/project-capacity; bin/fm-project-capacity-lib.sh
+#   owns the declaration, what holds a place, and the race argument) or how many
+#   workers a harness admits (config/harness-capacity; bin/fm-harness-capacity-lib.sh
+#   owns the declaration, what holds a place, and the admission verdict), a fresh
+#   ship or scout spawn counts the places already held while holding that same
+#   project-identity lock - taken on every backend whenever either declaration
+#   caps any project or harness, Orca included, because an uncapped clone's worker
+#   still holds a place for a capped clone of the same origin - and holds it through
+#   metadata publication. A spawn that finds
 #   every place held prints one `deferred:` line and exits 75 before any brief
 #   render, endpoint, worktree, record, or backlog move exists, so the task stays
 #   exactly as queued as it was; an unreadable declaration refuses with exit 1.
@@ -704,6 +706,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-project-capacity-lib.sh
 . "$SCRIPT_DIR/fm-project-capacity-lib.sh"
+# shellcheck source=bin/fm-harness-capacity-lib.sh
+. "$SCRIPT_DIR/fm-harness-capacity-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
@@ -3194,14 +3198,17 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
-# Project capacity admission (bin/fm-project-capacity-lib.sh owns the
-# declaration, what holds a place, and why this is race-safe). A fresh worker
-# for a project whose declared capacity is already held is deferred here, before
-# any brief render, endpoint, worktree, record, or backlog move exists, so the
-# deferral leaves the task exactly as queued as it was. A relaunch replaces a
-# worker that already holds a place, and a secondmate is not a worker.
+# Project and harness capacity admission (bin/fm-project-capacity-lib.sh and
+# bin/fm-harness-capacity-lib.sh own the declarations, what holds a place, and
+# why this is race-safe). A fresh worker for a project or harness whose declared
+# capacity is already held is deferred here, before any brief render, endpoint,
+# worktree, record, or backlog move exists, so the deferral leaves the task
+# exactly as queued as it was. A relaunch replaces a worker that already holds a
+# place, and a secondmate is not a worker.
 SPAWN_PROJECT_CAPACITY=
 SPAWN_PROJECT_CAPACITY_ANY=
+SPAWN_HARNESS_CAPACITY=
+SPAWN_HARNESS_CAPACITY_ANY=
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   SPAWN_CAPACITY_CONFIG=$(fm_project_capacity_config_dir "$FM_HOME" "$CONFIG") || {
     echo "error: could not resolve the root Firstmate home that declares project capacity for $PROJ_ABS" >&2
@@ -3213,9 +3220,20 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   fi
   SPAWN_PROJECT_CAPACITY=$FM_PROJECT_CAPACITY
   SPAWN_PROJECT_CAPACITY_ANY=$FM_PROJECT_CAPACITY_ANY
+
+  SPAWN_HARNESS_CAPACITY_CONFIG=$(fm_harness_capacity_config_dir "$FM_HOME" "$CONFIG") || {
+    echo "error: could not resolve the root Firstmate home that declares harness capacity for $HARNESS" >&2
+    exit 1
+  }
+  if ! fm_harness_capacity_lookup "$SPAWN_HARNESS_CAPACITY_CONFIG" "$HARNESS"; then
+    echo "error: spawn refused: the harness capacity declaration is unreadable ($FM_HARNESS_CAPACITY_ERROR); fix it so the captain's worker limits are known (docs/configuration.md \"Harness capacity\")" >&2
+    exit 1
+  fi
+  SPAWN_HARNESS_CAPACITY=$FM_HARNESS_CAPACITY
+  SPAWN_HARNESS_CAPACITY_ANY=$FM_HARNESS_CAPACITY_ANY
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] &&
-  { [ "$BACKEND" != orca ] || [ -n "$SPAWN_PROJECT_CAPACITY_ANY" ]; }; then
+  { [ "$BACKEND" != orca ] || [ -n "$SPAWN_PROJECT_CAPACITY_ANY" ] || [ -n "$SPAWN_HARNESS_CAPACITY_ANY" ]; }; then
   SPAWN_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ_ABS") || {
     echo "error: could not resolve the shared Treehouse project lock for $PROJ_ABS" >&2
     exit 1
@@ -3237,6 +3255,16 @@ if [ -n "$SPAWN_PROJECT_CAPACITY" ]; then
   fi
   if [ "$FM_PROJECT_CAPACITY_OCCUPANTS" -ge "$SPAWN_PROJECT_CAPACITY" ]; then
     echo "deferred: project $(basename "$PROJ_ABS") admits $SPAWN_PROJECT_CAPACITY worker(s) at once on this machine ($FM_PROJECT_CAPACITY_FILE) and $FM_PROJECT_CAPACITY_OCCUPANTS already hold a place ($FM_PROJECT_CAPACITY_OCCUPANT_IDS); task $ID was not launched and its backlog item stays queued - dispatch it again once one of them records its ready PR or is cleaned up" >&2
+    exit "$FM_PROJECT_CAPACITY_DEFER_EXIT"
+  fi
+fi
+if [ -n "$SPAWN_HARNESS_CAPACITY" ]; then
+  if ! fm_harness_capacity_occupants "$HARNESS" "$STATE" "$ID"; then
+    echo "error: spawn refused: harness $HARNESS declares a capacity of $SPAWN_HARNESS_CAPACITY, but this machine's task records cannot all be read to count it ($FM_HARNESS_CAPACITY_ERROR)" >&2
+    exit 1
+  fi
+  if [ "$FM_HARNESS_CAPACITY_OCCUPANTS" -ge "$SPAWN_HARNESS_CAPACITY" ]; then
+    echo "deferred: harness $HARNESS admits $SPAWN_HARNESS_CAPACITY worker(s) at once on this machine ($FM_HARNESS_CAPACITY_FILE) and $FM_HARNESS_CAPACITY_OCCUPANTS already hold a place ($FM_HARNESS_CAPACITY_OCCUPANT_IDS); task $ID was not launched and its backlog item stays queued - dispatch it again once one of them records its ready PR or is cleaned up" >&2
     exit "$FM_PROJECT_CAPACITY_DEFER_EXIT"
   fi
 fi
