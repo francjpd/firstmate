@@ -393,6 +393,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/free-models.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/herdr-backend.md",
       "audience": "operator-current"
     },
@@ -586,6 +590,10 @@
     },
     {
       "path": ".agents/skills/ship-landing/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/validate-free-models/SKILL.md",
       "audience": "agent-runtime"
     },
     {

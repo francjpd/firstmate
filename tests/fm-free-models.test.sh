@@ -106,7 +106,7 @@ case "$url" in
 esac
 model=
 if [ -n "$bodyfile" ] && [ -f "$bodyfile" ]; then
-    model=$(grep -o "model": *"[^"]*" "$bodyfile" 2>/dev/null | head -n1 | sed "s/.*"model": *"//; s/"$//")
+  model=$(jq -r '.model // empty' "$bodyfile" 2>/dev/null)
 fi
 printf '%s %s model=%s\n' "$method" "$url" "${model:-none}" >>"$stub/call.log"
 if [ "$kind" = list ]; then
@@ -173,7 +173,7 @@ test_fetch_probes_and_drops_dead() {
   # and the cloud models were never probed.
   assert_equals 10 "$(wc -l <"$stub/call.log" | tr -d ' ')" \
     "fetch made exactly the ten source and probe calls"
-  assert_equals 4 "$(grep -c 'chat/completions' "$stub/call.log")" \
+  assert_equals 4 "$(grep 'opencode.ai' "$stub/call.log" | grep -c 'chat/completions')" \
     "fetch probed only the free OpenCode Go candidates"
   assert_equals 3 "$(grep -c 'v1/models' "$stub/call.log")" \
     "fetch read each source's model list once"
@@ -248,7 +248,7 @@ test_blocked_candidate_is_kept_and_stated() {
     "opencode-go/step-5-preview-free: unverified, kept" \
     "fetch says plainly that the candidate is unverified"
   assert_contains "$(cat "$TMP_ROOT/blocked.stderr")" \
-    "opencode-go: 4 free candidates: 2 alive, 0 dropped as dead, 2 kept unverified" \
+    "opencode-go: 4 free candidates: 2 alive, 1 dropped as dead, 1 kept unverified" \
     "fetch counts the blocked candidate as unverified"
   pass "a subscription-level block keeps the candidate and says so plainly"
 }

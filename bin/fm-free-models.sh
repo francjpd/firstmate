@@ -152,7 +152,7 @@ fm_fm_probe() {  # <model> <chat-url> <key|-> <session-header|-> - echoes alive 
     2>/dev/null || true)
   err_code=$(printf '%s' "$body" | jq -r 'if (.error | type) == "object" then (.error.code | tostring) else "" end' \
     2>/dev/null || true)
-  reason="$err_type ${err_msg:-}"
+  reason="${err_msg:-$err_type}"
   reason=$(printf '%s' "$reason" | tr '\n' ' ' | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
   reason=$(printf '%s' "$reason" | cut -c1-120)
 
@@ -208,7 +208,7 @@ fm_fm_probe() {  # <model> <chat-url> <key|-> <session-header|-> - echoes alive 
   # Any other 4xx is a model-level rejection: the service will not serve it.
   case "$code" in
   4??)
-    printf 'dead: http %s %s' "$code" "${reason:-error}"
+    printf 'dead: %s' "${reason:-http $code error}"
     return 0
     ;;
   esac
@@ -431,11 +431,11 @@ fm_fm_action_save() {  # <set-file> - merge ranking, write the data file atomica
         fingerprint: $fp,
         validated: ($stored.validated // $today),
         models: [
-          $set[] | . as $key | ($key | split("/")) as $p
+          $set[] | . as $key
           | ($oldmap[$key] // {}) as $o
           | {
-              provider: $p[0],
-              id: $p[1],
+              provider: ($key | sub("/.*"; "")),
+              id: ($key | sub("^[^/]+/"; "")),
               reasoning_rank: $o.reasoning_rank,
               speed_rank: $o.speed_rank,
               why_reasoning: $o.why_reasoning,
@@ -449,6 +449,7 @@ fm_fm_action_save() {  # <set-file> - merge ranking, write the data file atomica
              and ($stored.picks.speed != null) and ($set | index($stored.picks.speed) != null)
           then {reasoning: $stored.picks.reasoning, speed: $stored.picks.speed}
           else {reasoning: null, speed: null}
+          end
         )
       }') || { printf '%s: save: could not build the data file\n' "$PROG" >&2; return 3; }
   if [ ! -d "$DATA" ]; then
