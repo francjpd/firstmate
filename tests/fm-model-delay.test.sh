@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Behavior tests for Firstmate's model-delay pacing mode: the skill that owns the
-# pacing rule, the config/model-delay preference and its /model-delay toggle, and the
-# sandglass indicator drawn beside the Calm working boat on Pi.
+# pacing rule, the free-model scope that rule applies to, the config/model-delay
+# preference and its /model-delay toggle, and the sandglass indicator drawn beside
+# the Calm working boat on Pi.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -23,19 +24,28 @@ PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
 
 # The skill is the one owner of the pacing rule: its always-loaded description must
-# carry the load trigger, and its body must name the fixed interval. The launch brief
-# only points at it, so the interval must not need to appear a second time.
+# carry the load trigger, and its body must name the fixed interval and the free-model
+# scope. The launch brief only points at it, so neither may need to appear a second
+# time.
 test_model_delay_skill_contract() {
   [ -f "$SKILL" ] || fail "model-delay skill is missing at $SKILL"
   assert_grep "name: model-delay" "$SKILL" "model-delay skill has no name frontmatter"
   assert_grep "description:" "$SKILL" "model-delay skill has no description frontmatter"
   assert_grep "Load when" "$SKILL" "model-delay skill description states no load trigger"
   assert_grep "model-delay on" "$SKILL" "model-delay skill trigger does not name its on state"
-  assert_grep "pause 45 seconds between model turns" "$SKILL" \
+  assert_grep "45 seconds between model turns" "$SKILL" \
     "model-delay skill does not fix the pacing interval"
   assert_grep "bin/fm-model-delay.sh 45" "$SKILL" \
     "model-delay skill does not point at the harness-agnostic wait helper"
-  pass "model-delay skill exists and its trigger, interval, and helper are stated"
+  # The scope is part of the pacing rule, so the skill must state which callers
+  # pace and how a caller tells. The firstmate on a paid model reads this skill
+  # and must not pace.
+  assert_grep "-free" "$SKILL" "model-delay skill does not name the free-model suffix"
+  assert_grep "FM_MODEL_DELAY_MODEL" "$SKILL" \
+    "model-delay skill does not name the variable that carries the caller's model"
+  assert_grep "bin/fm-free-model-lib.sh" "$SKILL" \
+    "model-delay skill does not point at the free-model rule owner"
+  pass "model-delay skill exists and its trigger, interval, free-model scope, and helper are stated"
 }
 
 # The mode must be discoverable where Calm is documented, and the preference contract
@@ -45,6 +55,9 @@ test_model_delay_documentation_contract() {
   assert_grep "config/model-delay" "$DOC" "model-delay page does not name the preference"
   assert_grep "../.agents/skills/model-delay/SKILL.md" "$DOC" "model-delay page does not point at the skill owner"
   assert_grep "bin/fm-model-delay.sh" "$DOC" "model-delay page does not point at the wait helper"
+  assert_grep "bin/fm-free-model-lib.sh" "$DOC" "model-delay page does not point at the free-model rule owner"
+  assert_grep "FM_MODEL_DELAY_MODEL" "$DOC" "model-delay page does not name the variable that carries the caller's model"
+  assert_grep "-free" "$DOC" "model-delay page does not state the free-model scope"
   assert_grep "## Token cost" "$DOC" "model-delay page does not document the waiting call's token cost"
   assert_grep "## Model-delay preference (config/model-delay)" "$CONFIG_DOC" \
     "configuration.md has no model-delay preference section"
@@ -53,10 +66,34 @@ test_model_delay_documentation_contract() {
   pass "model-delay is documented with the preference owned by configuration.md"
 }
 
+# The free-model rule is the one owner of which callers pace, and it is shared by
+# the helper's gate and the launch-brief section, so an id ending in -free is the
+# only free verdict and everything else - a paid id, an unknown id, no id at all -
+# is not.
+test_free_model_rule_contract() {
+  local lib
+  lib="$ROOT/bin/fm-free-model-lib.sh"
+  [ -f "$lib" ] || fail "the free-model rule lib is missing at $lib"
+  # shellcheck source=bin/fm-free-model-lib.sh
+  . "$lib"
+  fm_model_is_free "opencode-go/step-5-preview-free" \
+    || fail "a model id ending in -free was not classified free"
+  fm_model_is_free "step-5-preview-free" \
+    || fail "a bare free model id was not classified free"
+  for model in "some-paid-model" "opus-4.1" "-freeish" "" "free"; do
+    if fm_model_is_free "$model"; then
+      fail "model '$model' was classified free"
+    fi
+  done
+  pass "the free-model rule classifies exactly the -free suffix as free"
+}
+
 # The helper owns the wait: it gates on config/model-delay, blocks in the foreground for
 # exactly the interval it is given, and launches neither a background process nor a
 # timeout wrapper. A fake timeout on PATH proves the last point behaviorally, and the
-# elapsed bound proves the wait was not backgrounded.
+# elapsed bound proves the wait was not backgrounded. It spends that wait only on a
+# caller whose model is free, so the same matrix must be proven for a free, a paid, and
+# an unnamed model.
 test_model_delay_helper_contract() {
   local helper dir fakebin start end out rc
   helper="$ROOT/bin/fm-model-delay.sh"
@@ -86,22 +123,45 @@ SH
   [ "$rc" -eq 0 ] || fail "model-delay helper with the preference off exited $rc"
   [ -z "$out" ] || fail "model-delay helper with the preference off printed: $out"
 
-  # On: it blocks in the foreground for the interval, prints one short line, and
-  # launches no timeout. A backgrounded wait would return fast, so the elapsed bound
-  # is the behavioral proof that nothing was backgrounded.
+  # On and free: it blocks in the foreground for the interval, prints one short
+  # line, and launches no timeout. A backgrounded wait would return fast, so the
+  # elapsed bound is the behavioral proof that nothing was backgrounded.
   printf 'on\n' >"$dir/model-delay"
   start=$(date +%s)
-  out=$(FM_MODEL_DELAY_TIMEOUT_LOG="$TMP_ROOT/helper-timeout.log" PATH="$fakebin:$PATH" \
+  out=$(FM_MODEL_DELAY_MODEL=opencode-go/step-5-preview-free \
+    FM_MODEL_DELAY_TIMEOUT_LOG="$TMP_ROOT/helper-timeout.log" PATH="$fakebin:$PATH" \
     bash "$helper" 2 "$dir")
   rc=$?
   end=$(date +%s)
   [ "$rc" -eq 0 ] || fail "model-delay helper with the preference on exited $rc"
   [ "$((end - start))" -ge 2 ] || fail "model-delay helper returned before its interval elapsed"
   case "$out" in
-    *model-delay*paused*2s*) ;;
+    *model-delay*paced*2s*) ;;
     *) fail "model-delay helper printed an unexpected line: $out" ;;
   esac
   [ ! -s "$TMP_ROOT/helper-timeout.log" ] || fail "model-delay helper launched a timeout wrapper"
+
+  # On and paid, and on with no model named: no wait at all, because a paid
+  # fallback endpoint does not share the free endpoint's concurrency refusals.
+  # The skip line is the plain statement of what it did.
+  start=$(date +%s)
+  out=$(FM_MODEL_DELAY_MODEL=some-paid-model PATH="$fakebin:$PATH" bash "$helper" 30 "$dir")
+  rc=$?
+  end=$(date +%s)
+  [ "$rc" -eq 0 ] || fail "model-delay helper on a paid model exited $rc"
+  [ "$((end - start))" -lt 5 ] || fail "model-delay helper waited for a paid model"
+  case "$out" in
+    *skipped*) ;;
+    *) fail "model-delay helper on a paid model printed an unexpected line: $out" ;;
+  esac
+
+  out=$(env -u FM_MODEL_DELAY_MODEL PATH="$fakebin:$PATH" bash "$helper" 30 "$dir")
+  rc=$?
+  [ "$rc" -eq 0 ] || fail "model-delay helper with no model named exited $rc"
+  case "$out" in
+    *skipped*) ;;
+    *) fail "model-delay helper with no model named printed an unexpected line: $out" ;;
+  esac
 
   # A missing or invalid interval is refused, never silently defaulted, because the
   # skill is the only owner of the interval.
@@ -111,7 +171,7 @@ SH
   [ "$?" -eq 2 ] || fail "model-delay helper accepted a zero interval"
   bash "$helper" abc "$dir" >/dev/null 2>&1
   [ "$?" -eq 2 ] || fail "model-delay helper accepted a non-numeric interval"
-  pass "model-delay helper is inert while off, blocks for exactly the given interval, prints one line, launches no timeout, and refuses a missing interval"
+  pass "model-delay helper is inert while off and for a paid or unnamed model, waits only for a free model, prints one line, launches no timeout, and refuses a missing interval"
 }
 
 # Load the real extension against a fake Pi and assert the sandglass appears only while
@@ -286,6 +346,7 @@ JS
 
 test_model_delay_skill_contract
 test_model_delay_documentation_contract
+test_free_model_rule_contract
 test_model_delay_helper_contract
 test_pi_model_delay_indicator_and_toggle
 

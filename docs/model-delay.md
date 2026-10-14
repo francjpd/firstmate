@@ -8,9 +8,12 @@ This page is for operators who turn Model-delay on and need to know what it chan
 
 Model-delay changes only the pace at which agents issue model calls.
 It never changes what an agent does, which model it uses, or how it answers.
-The pacing rule is owned by [`.agents/skills/model-delay/SKILL.md`](../.agents/skills/model-delay/SKILL.md), which fixes the pause between model turns, and `bin/fm-model-delay.sh` owns the wait itself.
-While the mode is on, an agent runs that helper before its next model turn; the helper blocks in the foreground, prints one short line, backgrounds nothing, needs no timer or timeout, and is inert while the mode is off.
-Crewmates working in a project's local copy cannot discover that skill through `.agents/skills`, so their launch brief names the helper and the home's config directory as a dispatch-time contract.
+The pacing rule is owned by [`.agents/skills/model-delay/SKILL.md`](../.agents/skills/model-delay/SKILL.md), which fixes the pause between model turns and the free-model scope of that pause, and `bin/fm-model-delay.sh` owns the wait itself.
+While the mode is on, an agent on a free-tier model runs that helper before its next model turn; the helper blocks in the foreground, prints one short line, backgrounds nothing, needs no timer or timeout, and is inert while the mode is off.
+A model is free when its id ends in `-free`, the naming convention the free OpenCode Go preview uses (`opencode-go/step-5-preview-free`); that scope exists because the free endpoint is the one several agents' streams collide on, while a paid fallback endpoint does not share those refusals.
+The caller names its current model to the helper in `FM_MODEL_DELAY_MODEL`, and [`bin/fm-free-model-lib.sh`](../bin/fm-free-model-lib.sh) owns the verdict both the helper and the launch brief use.
+A paid model, an unknown model, and a caller that names no model are all skipped with no wait, so the pause never lands on a caller that does not need it.
+Crewmates working in a project's local copy cannot discover that skill through `.agents/skills`, so their launch brief names the helper, the model it must be told, and the home's config directory as a dispatch-time contract; a task resolving to a paid or unknown model gets no pacing section at all.
 
 ## Token cost
 
@@ -36,9 +39,10 @@ Turning the mode off restores the stock row or the plain boat immediately.
 ## Files and owners
 
 - [`configuration.md`](configuration.md#model-delay-preference-configmodel-delay) owns the persisted preference file and its resolution rules.
-- `.agents/skills/model-delay/SKILL.md` owns the pacing rule, including the fixed interval.
-- `bin/fm-model-delay.sh` owns the harness-agnostic wait and gates itself on the same `config/model-delay` switch.
-- `bin/fm-dod-lib.sh` owns the launch-brief pacing section that points crewmates who cannot discover the skill at the helper, the interval owner, and this home's config directory.
+- [`.agents/skills/model-delay/SKILL.md`](../.agents/skills/model-delay/SKILL.md) owns the pacing rule, including the fixed interval and the free-model scope.
+- [`bin/fm-free-model-lib.sh`](../bin/fm-free-model-lib.sh) owns the free-tier verdict, the one rule that decides which callers pace.
+- `bin/fm-model-delay.sh` owns the harness-agnostic wait, gates itself on the same `config/model-delay` switch, and spends that wait only on a free model named in `FM_MODEL_DELAY_MODEL`.
+- `bin/fm-dod-lib.sh` owns the launch-brief pacing section that points crewmates who cannot discover the skill at the helper, the interval owner, the model to name, and this home's config directory.
 - `.pi/extensions/lib/fm-calm-working-ship.ts` owns Pi's sandglass rendering inside the shared working widget.
 
 ## A stricter future option

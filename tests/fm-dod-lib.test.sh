@@ -465,26 +465,38 @@ test_worker_role_names_skill_and_fallback_file() {
 
 # The model-delay pacing contract is the launch-brief carry for a worker that
 # cannot discover .agents/skills/model-delay. It must appear only while the
-# home's config/model-delay reads "on", and it must point at the skill by name
-# and by the same absolute fallback path fm_brief_worker_role uses.
+# home's config/model-delay reads "on" AND the task's resolved model is free,
+# and it must point at the skill by name and by the same absolute fallback path
+# fm_brief_worker_role uses. A paid or unknown model carries no pacing
+# instruction at all, and the brief must name the model the helper gates on so
+# brief and helper agree about the same model.
 test_model_delay_pacing_contract_gate() {
-  local cfg skill
+  local cfg skill free_model paid_model
   cfg="$TMP_ROOT/model-delay-config"
   mkdir -p "$cfg"
   skill="$ROOT/.agents/skills/model-delay/SKILL.md"
   [ -f "$skill" ] || fail "model-delay skill file is missing at $skill"
+  free_model=opencode-go/step-5-preview-free
+  paid_model=some-paid-model
 
-  fm_model_delay_pacing_contract "$cfg" "$ROOT" >"$TMP_ROOT/pacing-absent.txt"
+  fm_model_delay_pacing_contract "$cfg" "$ROOT" "$free_model" >"$TMP_ROOT/pacing-absent.txt"
   [ ! -s "$TMP_ROOT/pacing-absent.txt" ] \
     || fail "model-delay contract printed with no preference file"
 
   printf 'off\n' >"$cfg/model-delay"
-  fm_model_delay_pacing_contract "$cfg" "$ROOT" >"$TMP_ROOT/pacing-off.txt"
+  fm_model_delay_pacing_contract "$cfg" "$ROOT" "$free_model" >"$TMP_ROOT/pacing-off.txt"
   [ ! -s "$TMP_ROOT/pacing-off.txt" ] \
     || fail "model-delay contract printed while the preference was off"
 
   printf 'on\n' >"$cfg/model-delay"
-  fm_model_delay_pacing_contract "$cfg" "$ROOT" >"$TMP_ROOT/pacing-on.txt"
+  fm_model_delay_pacing_contract "$cfg" "$ROOT" "$paid_model" >"$TMP_ROOT/pacing-paid.txt"
+  [ ! -s "$TMP_ROOT/pacing-paid.txt" ] \
+    || fail "model-delay contract printed for a paid model"
+  fm_model_delay_pacing_contract "$cfg" "$ROOT" >"$TMP_ROOT/pacing-unknown.txt"
+  [ ! -s "$TMP_ROOT/pacing-unknown.txt" ] \
+    || fail "model-delay contract printed for an unknown model"
+
+  fm_model_delay_pacing_contract "$cfg" "$ROOT" "$free_model" >"$TMP_ROOT/pacing-on.txt"
   assert_grep "Current model pacing contract" "$TMP_ROOT/pacing-on.txt" \
     "model-delay contract did not print its heading"
   assert_grep "\`$ROOT/bin/fm-model-delay.sh <seconds> $cfg\`" "$TMP_ROOT/pacing-on.txt" \
@@ -495,7 +507,9 @@ test_model_delay_pacing_contract_gate() {
     "model-delay contract did not name the fallback file"
   assert_grep "never backgrounds or times out" "$TMP_ROOT/pacing-on.txt" \
     "model-delay contract did not state the helper's foreground wait"
-  pass "model-delay pacing contract is gated on config/model-delay and names the helper, interval owner, and fallback"
+  assert_grep "\`FM_MODEL_DELAY_MODEL=$free_model\`" "$TMP_ROOT/pacing-on.txt" \
+    "model-delay contract did not name the free model the helper gates on"
+  pass "model-delay pacing contract is gated on config/model-delay and a free model, and names the helper, interval owner, model, and fallback"
 }
 
 test_worker_role_names_skill_and_fallback_file

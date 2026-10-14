@@ -138,26 +138,35 @@ EOF
 # The launch-brief section that carries Model-delay pacing to a ship or scout worker.
 # bin/fm-spawn.sh is its one emitter, placing it in the launch-brief overlay right
 # after fm_brief_worker_role. It prints nothing unless the home's config/model-delay
-# preference reads exactly "on", so a disabled mode changes no brief. The skill
+# preference reads exactly "on" AND the task's resolved model is free, so a disabled
+# mode, a paid model, and an unknown model all change no brief. The skill
 # .agents/skills/model-delay/SKILL.md owns the pacing rule, including the fixed
 # interval, and points at bin/fm-model-delay.sh, which owns the wait; this section
-# names both the helper and this home's config directory, because a worker in another
-# project's worktree cannot discover that skill or that bin/ through its own tree, and
-# it gives the same absolute-path fallback fm_brief_worker_role uses for
-# firstmate-coding-guidelines. The config argument is the resolved config directory
-# (FM_CONFIG_OVERRIDE or $FM_HOME/config), and the code root is the Firstmate checkout
-# that holds the helper and skill. Both are empty for callers that opt out, which
-# suppress the section.
-fm_model_delay_pacing_contract() {  # <config-dir> <code-root>
-  local config=$1 root=$2
+# names the helper, this home's config directory, and the model the helper must be
+# told, because a worker in another project's worktree cannot discover that skill or
+# that bin/ through its own tree, and it gives the same absolute-path fallback
+# fm_brief_worker_role uses for firstmate-coding-guidelines. The config argument is
+# the resolved config directory (FM_CONFIG_OVERRIDE or $FM_HOME/config), the code
+# root is the Firstmate checkout that holds the helper and skill, and the model
+# argument is the task's resolved model id. Empty config, empty code root, or empty
+# model all suppress the section. bin/fm-free-model-lib.sh owns the free-tier verdict
+# and is the same owner bin/fm-model-delay.sh gates on, so a brief that carries this
+# section and a helper that honors it cannot disagree about the same model.
+fm_model_delay_pacing_contract() {  # <config-dir> <code-root> [model]
+  local config=$1 root=$2 model=${3:-}
   [ -n "$config" ] || return 0
+  [ -n "$root" ] || return 0
   [ -f "$config/model-delay" ] || return 0
   [ "$(tr -d '[:space:]' <"$config/model-delay" 2>/dev/null)" = on ] || return 0
+  # shellcheck source=bin/fm-free-model-lib.sh
+  . "$root/bin/fm-free-model-lib.sh" || return 0
+  fm_model_is_free "$model" || return 0
   cat <<EOF
 
 # Current model pacing contract
 This section supersedes every earlier brief instruction about model-call pacing.
-This home has model-delay on: before each model turn, run \`$root/bin/fm-model-delay.sh <seconds> $config\`, where <seconds> is the fixed pause \`.agents/skills/model-delay/SKILL.md\` names.
+This home has model-delay on and this task resolves to a free model (\`$model\`): before each model turn, run \`$root/bin/fm-model-delay.sh <seconds> $config\`, where <seconds> is the fixed pause \`.agents/skills/model-delay/SKILL.md\` names.
+Run it with \`FM_MODEL_DELAY_MODEL=$model\` in the environment, kept pointed at the model this session is actually running, so a fallback to a paid model stops the pause.
 The helper blocks in the foreground, never backgrounds or times out, and is inert when the mode is off.
 If that skill name does not resolve in this session, read \`$root/.agents/skills/model-delay/SKILL.md\` for the interval instead.
 EOF
