@@ -146,14 +146,16 @@ fm_guard_clear_stale_banner() {
 }
 
 # Worktree-tangle alarm, checked FIRST and independent of in-flight tasks: the
-# firstmate PRIMARY checkout (FM_ROOT) must stay on its default branch. If a
-# crewmate's branch/commits landed here instead of in its own isolated worktree,
-# the primary is stranded on a feature branch - surface it loudly on the very next
-# fleet action, the same way the watcher-down banner does. Scoped to the primary
-# only: detached HEAD (linked worktrees, secondmate homes) never trips this.
-tangle_branch=$(fm_primary_tangle_branch "$FM_ROOT" || true)
+# firstmate PRIMARY checkout (FM_ROOT) must stay on the branch it is expected to
+# sit on - the home-declared integration branch when config/integration-branch
+# names one, else the repo's default branch. If a crewmate's branch/commits
+# landed here instead of in its own isolated worktree, the primary is stranded on
+# a feature branch - surface it loudly on the very next fleet action, the same
+# way the watcher-down banner does. Scoped to the primary only: detached HEAD
+# (linked worktrees, secondmate homes) never trips this.
+tangle_branch=$(fm_primary_tangle_branch "$FM_ROOT" "$CONFIG" || true)
 if [ -n "$tangle_branch" ]; then
-  tangle_default=$(fm_default_branch "$FM_ROOT" 2>/dev/null || echo main)
+  tangle_default=$(fm_integration_branch "$FM_ROOT" "$CONFIG" 2>/dev/null || echo main)
   trule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
   {
     printf '●%s\n' "$trule"

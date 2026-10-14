@@ -7,7 +7,7 @@ Start with the directory layout, then use the setting reference for the behavior
 
 | What you want to configure | Start here |
 | --- | --- |
-| Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
+| Firstmate's code, private files, or project location | [FM_HOME](#fm_home), [operational home layout](#operational-home-layout-and-state), and [integration branch](#integration-branch-configintegration-branch) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
 | Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), and its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
@@ -1206,6 +1206,27 @@ Remote homes are never walked, because their workers run on another machine.
 When every place is held, `bin/fm-spawn.sh` launches nothing, creates no record, leaves the backlog item queued, prints one `deferred:` line naming the holders, and exits 75, so Firstmate dispatches the item again once a place frees.
 A malformed or unreadable file refuses every fresh ship or scout spawn until it is fixed, rather than guessing the intended limit, and so does a local home's state directory or task record that cannot be read while counting a capped harness's holders.
 [`bin/fm-harness-capacity-lib.sh`](../bin/fm-harness-capacity-lib.sh) owns the file format, what holds a place, and the admission verdict.
+
+## Integration branch (config/integration-branch)
+
+The optional local, gitignored `config/integration-branch` names the branch this home keeps its own work on, so the repository's default branch can stay a pristine mirror of upstream that always fast-forwards.
+Without it nothing changes: the home is expected on the default branch, its local-only work lands there, and a fresh ship or scout starts from that branch's upstream tip.
+The file lives in the active home and holds one branch name:
+
+```text
+own
+```
+
+A declaration is honoured only when that name is a local branch of the repository, so a stale or mistyped line falls back to the default branch rather than refusing work.
+The name is then the branch three things expect:
+
+- the branch the primary checkout must sit on, so `bin/fm-guard.sh`'s worktree-tangle alarm stays silent on it and still fires on any other named branch;
+- the branch a local-only landing fast-forwards, which `bin/fm-merge-local.sh` requires the checkout to be on;
+- the base a fresh ship or scout starts from.
+
+Because a declared integration branch normally exists only locally, a fresh spawn resolves it from the local ref instead of fetching `origin/<name>`.
+That exception applies only while the branch is genuinely local-only: if `origin` also carries it, the ordinary upstream base path is used.
+[`bin/fm-tangle-lib.sh`](../bin/fm-tangle-lib.sh) owns the resolution (`fm_integration_branch` and `fm_local_integration_branch`).
 
 ## Crew dispatch profiles (config/crew-dispatch.json)
 

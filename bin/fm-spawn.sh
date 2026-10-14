@@ -703,6 +703,8 @@ if [ -e "$STATE" ] || [ -L "$STATE" ]; then
 fi
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
@@ -3710,8 +3712,16 @@ spawn_worktree_has_origin_config() { # <worktree>
   return 1
 }
 
+# Echo the home-declared integration branch when it is genuinely local-only for
+# this repo; return 1 otherwise. A declared integration branch is never pushed,
+# so a fresh spawn base must resolve it from the local ref rather than origin.
+spawn_local_integration_base() { # <worktree>
+  local worktree=$1
+  fm_local_integration_branch "$worktree" "$CONFIG"
+}
+
 freshen_spawn_worktree_base() { # <worktree> [<base-branch>]
-  local worktree=$1 base=${2:-} default target expected actual status
+  local worktree=$1 base=${2:-} default target expected actual status local_integration
   status=$(git -C "$worktree" -c core.quotePath=false status --porcelain) || {
     echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
     return 1
@@ -3737,6 +3747,25 @@ freshen_spawn_worktree_base() { # <worktree> [<base-branch>]
   fi
   if [ -n "$base" ]; then
     default=$base
+  elif local_integration=$(spawn_local_integration_base "$worktree"); then
+    # The home keeps its own work on a local integration branch that is never
+    # pushed, so its fresh base is that local ref: there is no origin branch to
+    # fetch and no origin/<name> to reset to.
+    target="refs/heads/$local_integration"
+    expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
+      echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    }
+    if ! git -C "$worktree" reset --hard "$target" >/dev/null; then
+      echo "error: could not reset pooled worktree '$worktree' to '$target'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
+    actual=$(git -C "$worktree" rev-parse --verify --quiet HEAD 2>/dev/null || true)
+    if [ "$actual" != "$expected" ]; then
+      echo "error: pooled worktree '$worktree' is at '${actual:-unknown}', not current '$target' ('$expected'); refusing to launch" >&2
+      return 1
+    fi
+    return 0
   else
     if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
       echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2

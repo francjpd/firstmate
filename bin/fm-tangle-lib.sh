@@ -35,19 +35,59 @@ fm_default_branch() {
   return 1
 }
 
-# If the git checkout at <root> is tangled - on a NAMED branch that is not its
-# default branch - echo the offending branch name and return 0. For every healthy
-# state (not a git work tree, detached HEAD, or already on the default branch)
-# echo nothing and return 1. Detached HEAD is how linked worktrees and secondmate
-# homes legitimately sit, so they never trip this; only a feature branch checked
-# out in a primary checkout does.
-fm_primary_tangle_branch() {
-  local root=$1 cur default
+# Echo the declared integration branch only when it is genuinely local-only for
+# this repo: <config-dir>/integration-branch names it, the branch exists as a
+# local ref of <dir>, and origin has no branch of that name. Return 1 otherwise.
+#
+# A spawn base normally comes from origin, so a home whose own work sits on a
+# local integration branch that is never pushed needs this answer to resolve that
+# base from the local ref instead. Requiring the branch to be absent from origin
+# keeps the exception from silently covering a branch that origin really has.
+# Echoes the name, or returns 1.
+fm_local_integration_branch() {  # <dir> [<config-dir>]
+  local dir=$1 config_dir=${2:-} branch
+  [ -n "$config_dir" ] && [ -f "$config_dir/integration-branch" ] || return 1
+  branch=$(tr -d '[:space:]' <"$config_dir/integration-branch" 2>/dev/null || true)
+  [ -n "$branch" ] || return 1
+  git -C "$dir" show-ref --verify --quiet "refs/heads/$branch" || return 1
+  git -C "$dir" show-ref --verify --quiet "refs/remotes/origin/$branch" && return 1
+  printf '%s\n' "$branch"
+}
+
+# Resolve the branch a home's primary checkout is expected to sit on: the
+# home-declared integration branch when <config-dir>/integration-branch names one
+# that exists as a local branch of <dir>, else the repo's default branch.
+#
+# A home may keep its own work on an integration branch while the repo's default
+# branch stays a pristine mirror of upstream, so every "is the primary on the
+# branch it should be on" decision must ask this question rather than
+# fm_default_branch. An absent, empty, or unknown declaration changes nothing.
+# Echoes the name, or returns 1.
+fm_integration_branch() {  # <dir> [<config-dir>]
+  local dir=$1 config_dir=${2:-} branch
+  if [ -n "$config_dir" ] && [ -f "$config_dir/integration-branch" ]; then
+    branch=$(tr -d '[:space:]' <"$config_dir/integration-branch" 2>/dev/null || true)
+    if [ -n "$branch" ] && git -C "$dir" show-ref --verify --quiet "refs/heads/$branch"; then
+      printf '%s\n' "$branch"
+      return 0
+    fi
+  fi
+  fm_default_branch "$dir"
+}
+
+# If the git checkout at <root> is tangled - on a NAMED branch that is not the
+# branch it is expected to sit on - echo the offending branch name and return 0.
+# For every healthy state (not a git work tree, detached HEAD, or already on the
+# expected branch) echo nothing and return 1. Detached HEAD is how linked
+# worktrees and secondmate homes legitimately sit, so they never trip this; only
+# a feature branch checked out in a primary checkout does.
+fm_primary_tangle_branch() {  # <root> [<config-dir>]
+  local root=$1 config_dir=${2:-} cur expected
   git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
   cur=$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   [ -n "$cur" ] || return 1
-  default=$(fm_default_branch "$root") || return 1
-  [ "$cur" = "$default" ] && return 1
+  expected=$(fm_integration_branch "$root" "$config_dir") || return 1
+  [ "$cur" = "$expected" ] && return 1
   printf '%s\n' "$cur"
   return 0
 }
