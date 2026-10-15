@@ -6,6 +6,9 @@
 # clean fast-forward, never forcing, merging, or stashing" used by every sync
 # path:
 #   - /updatefirstmate (bin/fm-update.sh) pulls from origin: base_mode "origin".
+#     When a home declares a local integration branch (config/integration-branch),
+#     the default branch ref advances from origin, fast-forward only, without checking
+#     it out, then merges into the checked-out integration branch.
 #   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
 #     on startup) follows the PRIMARY checkout's current default-branch commit:
 #     base_mode is that local commit, with NO fetch and no origin dependency.
@@ -40,6 +43,8 @@
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-tangle-lib.sh"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -383,9 +388,13 @@ FF_STATUS=""
 FF_INSTR=""
 ff_target() {
   local dir=$1 label=$2 base_mode=$3 allow_detached=${4:-no} ignore_seed_marker=${5:-no}
-  local secondmate_id=${6:-} reconciliation_state=${7:-}
+  local secondmate_id=${6:-} reconciliation_state=${7:-} config_dir=${8:-}
   FF_STATUS="skipped"
   FF_INSTR=""
+
+  if [ -z "$config_dir" ] && [ -z "$secondmate_id" ]; then
+    config_dir="${FM_CONFIG_OVERRIDE:-${FM_HOME:-$dir}/config}"
+  fi
 
   if [ ! -d "$dir" ]; then
     echo "$label: skipped: not a directory"
@@ -396,11 +405,12 @@ ff_target() {
     return 0
   fi
 
-  local default base cur instr local_rev base_rev before after out
+  local default expected base cur instr local_rev base_rev before after out
   default=$(default_branch "$dir") || {
     echo "$label: skipped: cannot determine default branch"
     return 0
   }
+  expected=$(fm_integration_branch "$dir" "$config_dir" 2>/dev/null || echo "$default")
 
   # Resolve the fast-forward base from base_mode (see header).
   if [ "$base_mode" = origin ]; then
@@ -424,16 +434,81 @@ ff_target() {
 
   cur=$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
   if [ -z "$cur" ] && [ "$allow_detached" != yes ]; then
-    echo "$label: skipped: detached HEAD, expected $default"
+    echo "$label: skipped: detached HEAD, expected $expected"
     return 0
   fi
-  if [ -n "$cur" ] && [ "$cur" != "$default" ]; then
-    echo "$label: skipped: on $cur, expected $default"
+  if [ -n "$cur" ] && [ "$cur" != "$expected" ]; then
+    echo "$label: skipped: on $cur, expected $expected"
     return 0
   fi
 
   if [ -n "$(dirty_status "$dir" "$ignore_seed_marker")" ]; then
     echo "$label: skipped: dirty working tree"
+    return 0
+  fi
+
+  if [ "$expected" != "$default" ]; then
+    local local_default_rev
+    local_default_rev=$(git -C "$dir" rev-parse --verify --quiet "refs/heads/$default^{commit}" 2>/dev/null || echo "")
+    local_rev=$(git -C "$dir" rev-parse HEAD 2>/dev/null) || {
+      echo "$label: skipped: cannot read HEAD"
+      return 0
+    }
+    base_rev=$(git -C "$dir" rev-parse "$base" 2>/dev/null) || {
+      echo "$label: skipped: cannot read $base"
+      return 0
+    }
+    if [ "$local_rev" = "$base_rev" ] && [ "$local_default_rev" = "$base_rev" ]; then
+      FF_STATUS="current"
+      [ -z "$reconciliation_state" ] || secondmate_update_reconcile_clear "$reconciliation_state" "$secondmate_id" || true
+      echo "$label: already current"
+      return 0
+    fi
+
+    if [ -n "$local_default_rev" ] && ! git -C "$dir" merge-base --is-ancestor "$local_default_rev" "$base" 2>/dev/null; then
+      echo "$label: skipped: default branch $default diverged from $base"
+      return 0
+    fi
+
+    if ! git -C "$dir" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then
+      echo "$label: skipped: diverged from $base"
+      return 0
+    fi
+
+    if [ "$local_default_rev" != "$base_rev" ]; then
+      if [ "$base_mode" = origin ]; then
+        if ! out=$(git -C "$dir" fetch origin "$default:$default" 2>&1); then
+          echo "$label: skipped: fast-forward of $default failed: $(first_line "$out")"
+          return 0
+        fi
+      else
+        if ! out=$(git -C "$dir" update-ref "refs/heads/$default" "$base_rev" ${local_default_rev:+"$local_default_rev"} 2>&1); then
+          echo "$label: skipped: update-ref of $default failed: $(first_line "$out")"
+          return 0
+        fi
+      fi
+    fi
+
+    instr=$(changed_instr "$dir" "$base")
+    before=$(git -C "$dir" rev-parse --short HEAD)
+    if ! out=$(git -C "$dir" merge --ff-only "refs/heads/$default" 2>&1); then
+      echo "$label: skipped: fast-forward failed: $(first_line "$out")"
+      return 0
+    fi
+    after=$(git -C "$dir" rev-parse --short HEAD)
+    if [ "$before" = "$after" ]; then
+      FF_STATUS="current"
+      echo "$label: already current"
+    else
+      FF_STATUS="updated"
+      FF_INSTR="$instr"
+      [ -z "$reconciliation_state" ] || secondmate_update_reconcile_clear "$reconciliation_state" "$secondmate_id" || true
+      if [ -n "$instr" ]; then
+        echo "$label: updated $before..$after (instructions changed: $instr)"
+      else
+        echo "$label: updated $before..$after"
+      fi
+    fi
     return 0
   fi
 

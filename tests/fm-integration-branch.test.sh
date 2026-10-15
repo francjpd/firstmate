@@ -3,8 +3,9 @@
 #
 # A home may keep its own work on a local integration branch while the repo's
 # default branch stays a pristine mirror of upstream. `config/integration-branch`
-# declares that branch, and three places must honour it: the primary-checkout
-# tangle guard, the local landing target, and the base a fresh spawn starts from.
+# declares that branch, and four places must honour it: the primary-checkout
+# tangle guard, the local landing target, the base a fresh spawn starts from,
+# and the self-update path (bin/fm-update.sh).
 # These tests cover the shared resolution and prove the spawn base end to end.
 set -u
 

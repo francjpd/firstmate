@@ -3,8 +3,10 @@
 # firstmate repo and every registered secondmate home.
 #
 # The guarantees under test mirror fm-fleet-sync.sh and prime directive #3:
-#   - The running firstmate repo (on its default branch) fast-forwards from
-#     origin; a leased secondmate home (detached HEAD on the default branch)
+#   - The running firstmate repo (on its default branch or declared integration
+#     branch) fast-forwards from origin; a declared integration branch advances
+#     both the mirror default branch ref and the checked-out integration branch;
+#     a leased secondmate home (detached HEAD on the default branch)
 #     fast-forwards the same way.
 #   - A dirty, offline, wrong-branch, or genuinely unique diverged target is
 #     skipped and reported, never forced or stashed, so unlanded work survives.
@@ -556,6 +558,104 @@ test_primary_update_rebinds_local_watch() {
   pass "T12 a self-update rebinds a locally armed watch on the primary"
 }
 
+# --- T13: integration branch advances mirror ref and checkout -------------
+test_integration_branch_advances_mirror_and_checkout() {
+  local w out out2 origin_tip
+  w=$(new_world t13)
+  mkdir -p "$w/home/config"
+  printf 'own\n' > "$w/home/config/integration-branch"
+  git -C "$w/main" checkout -q -b own
+  bump_origin "$w" instr
+  origin_tip=$(git -C "$w/seed" rev-parse main)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "firstmate integration branch advanced"
+  assert_contains "$out" "reread-firstmate: yes" "instruction change triggers reread"
+  assert_equals "$origin_tip" "$(git -C "$w/main" rev-parse HEAD)" \
+    "checked-out integration branch did not advance to origin tip"
+  assert_equals "$origin_tip" "$(git -C "$w/main" rev-parse main)" \
+    "mirror default branch ref did not advance to origin tip"
+  assert_equals "own" "$(git -C "$w/main" symbolic-ref --short HEAD)" \
+    "checkout left the declared integration branch"
+  [ "$(git -C "$w/main" rev-list --parents -n1 HEAD | wc -w | tr -d ' ')" -eq 2 ] \
+    || fail "integration branch tip is not a single-parent fast-forward"
+
+  out2=$(run_update "$w")
+  assert_contains "$out2" "firstmate: already current" "second update should be already current"
+  assert_contains "$out2" "reread-firstmate: no" "no reread when already current"
+  pass "T13 integration branch advances both mirror ref and checked-out branch"
+}
+
+# --- T14: integration branch unsafe states are skipped --------------------
+test_integration_branch_unsafe_states() {
+  local w out before_head before_main
+
+  # Case 1: wrong branch checked out
+  w=$(new_world t14a)
+  mkdir -p "$w/home/config"
+  printf 'own\n' > "$w/home/config/integration-branch"
+  git -C "$w/main" checkout -q -b own
+  git -C "$w/main" checkout -q -b feature/stray
+  bump_origin "$w" instr
+  out=$(run_update "$w")
+  assert_contains "$out" "firstmate: skipped: on feature/stray, expected own" \
+    "stray branch was not skipped with expected integration branch"
+
+  # Case 2: dirty working tree
+  w=$(new_world t14b)
+  mkdir -p "$w/home/config"
+  printf 'own\n' > "$w/home/config/integration-branch"
+  git -C "$w/main" checkout -q -b own
+  bump_origin "$w" instr
+  printf 'dirty uncommitted\n' >> "$w/main/AGENTS.md"
+  out=$(run_update "$w")
+  assert_contains "$out" "firstmate: skipped: dirty working tree" "dirty integration tree was not skipped"
+
+  # Case 3: diverged integration branch
+  w=$(new_world t14c)
+  mkdir -p "$w/home/config"
+  printf 'own\n' > "$w/home/config/integration-branch"
+  git -C "$w/main" checkout -q -b own
+  printf 'local work\n' > "$w/main/local.txt"
+  git -C "$w/main" add local.txt
+  git -C "$w/main" commit -qm local-own
+  before_head=$(git -C "$w/main" rev-parse HEAD)
+  before_main=$(git -C "$w/main" rev-parse main)
+  bump_origin "$w" instr
+  out=$(run_update "$w")
+  assert_contains "$out" "firstmate: skipped: diverged from origin/main" \
+    "diverged integration branch was not skipped"
+  assert_equals "$before_head" "$(git -C "$w/main" rev-parse HEAD)" \
+    "diverged integration branch HEAD moved"
+  assert_equals "$before_main" "$(git -C "$w/main" rev-parse main)" \
+    "mirror ref moved on diverged integration branch"
+
+  # Case 4: diverged default branch mirror ref
+  w=$(new_world t14d)
+  mkdir -p "$w/home/config"
+  printf 'own\n' > "$w/home/config/integration-branch"
+  git -C "$w/main" checkout -q -b own
+  # Put divergent commit on main
+  git -C "$w/main" checkout -q main
+  printf 'local main\n' > "$w/main/local-main.txt"
+  git -C "$w/main" add local-main.txt
+  git -C "$w/main" commit -qm local-main
+  git -C "$w/main" checkout -q own
+  before_head=$(git -C "$w/main" rev-parse HEAD)
+  before_main=$(git -C "$w/main" rev-parse main)
+  bump_origin "$w" instr
+  out=$(run_update "$w")
+  assert_contains "$out" "firstmate: skipped: default branch main diverged from origin/main" \
+    "diverged default branch ref was not skipped"
+  assert_equals "$before_head" "$(git -C "$w/main" rev-parse HEAD)" \
+    "HEAD moved on diverged default branch"
+  assert_equals "$before_main" "$(git -C "$w/main" rev-parse main)" \
+    "diverged default branch mirror ref moved"
+
+  pass "T14 integration branch unsafe states are skipped without moving refs"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_bin_only_advance_restarts
@@ -572,5 +672,7 @@ test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
 test_primary_update_rebinds_local_watch
+test_integration_branch_advances_mirror_and_checkout
+test_integration_branch_unsafe_states
 
 echo "# all fm-update tests passed"

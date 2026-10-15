@@ -1218,11 +1218,12 @@ own
 ```
 
 A declaration is honoured only when that name is a local branch of the repository, so a stale or mistyped line falls back to the default branch rather than refusing work.
-The name is then the branch three things expect:
+The name is then the branch four things expect:
 
 - the branch the primary checkout must sit on, so `bin/fm-guard.sh`'s worktree-tangle alarm stays silent on it and still fires on any other named branch;
 - the branch a local-only landing fast-forwards, which `bin/fm-merge-local.sh` requires the checkout to be on;
-- the base a fresh ship or scout starts from.
+- the base a fresh ship or scout starts from;
+- the branch `bin/fm-update.sh` updates by advancing the mirror ref of the default branch from origin (fast-forward only, without checking it out) and then merging that ref into the integration branch, leaving the checkout on the integration branch throughout.
 
 Because a declared integration branch normally exists only locally, a fresh spawn resolves it from the local ref instead of fetching `origin/<name>`.
 That exception applies only while the branch is genuinely local-only: if `origin` also carries it, the ordinary upstream base path is used.

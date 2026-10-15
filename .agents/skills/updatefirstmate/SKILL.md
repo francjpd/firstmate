@@ -3,7 +3,7 @@ name: updatefirstmate
 description: >-
   Self-update a running firstmate and its secondmates to the latest from origin.
   Use when the captain invokes /updatefirstmate (e.g. "/updatefirstmate", "update firstmate", "pull the latest firstmate").
-  Updates this firstmate repo's default branch and every local or remote secondmate through its guarded convergence path (never forced, never disruptive), then re-reads AGENTS.md and restarts every live second mate through the persist-gated restart, with a fallback re-read nudge only where a restart cannot be proven.
+  Updates this firstmate repo's default branch (or declared integration branch) and every local or remote secondmate through its guarded convergence path (never forced, never disruptive), then re-reads AGENTS.md and restarts every live second mate through the persist-gated restart, with a fallback re-read nudge only where a restart cannot be proven.
 user-invocable: true
 metadata:
   internal: true
@@ -42,7 +42,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
    ```sh
    bin/fm-update.sh
    ```
-   It fast-forwards this firstmate repo's default branch from origin, then updates every registered local or remote secondmate home through its placement-specific guarded path.
+   It fast-forwards this firstmate repo's default branch from origin (or advances its default branch mirror ref and declared integration branch), then updates every registered local or remote secondmate home through its placement-specific guarded path.
    It prints one status line per target (`updated <old>..<new>` / `reconciled redundant divergence <old>..<new>` / `already current` / `skipped: <reason>`), followed by three action lines that tell you exactly what to do next:
    - `reread-firstmate: yes|no`
    - `restart-secondmates: fm-<id>...|none`
@@ -96,7 +96,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
 ## Safety
 
 - **Guarded convergence only.**
-  A dirty, offline, non-default, or uniquely diverged target is skipped and reported, never forced or stashed.
+  A dirty, offline, unexpected-branch, or uniquely diverged target is skipped and reported, never forced or stashed.
   Only a clean secondmate divergence whose complete local result is already present upstream may move without ancestry, and `reset --keep` still refuses conflicting working-tree changes.
   Nothing with unlanded work is ever discarded - this is prime directive #3.
 - **Only the firstmate repo and its worktrees** are touched, never `projects/`.
