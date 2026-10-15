@@ -366,6 +366,102 @@ fm_control_endpoint_absence_verdict() {  # <backend> <target>
   esac
 }
 
+# fm_control_agy_idle_proof: verify whether an Antigravity (agy) worker is
+# provably safe to stop via /quit without an empty composer. agy's bare borderless
+# `>` prompt row classifies as `unknown` under the dead-shell rule, so the stop
+# path accepts verified idle evidence (native agent-state on Herdr, delivery footer
+# on tmux/herdr) instead.
+# Prints "<verdict>\t<reason>":
+#   idle          - verified idle; safe to type the exit command
+#   pending       - composer line visibly holds pending text
+#   blocked       - agent is blocked on a prompt/dialog
+#   busy          - agent is actively working or delivery footer shows busy
+#   contradictory - native agent state contradicts the rendered delivery footer
+#   unproven      - idle evidence could not be established / unclassifiable
+fm_control_agy_idle_proof() {  # <backend> <target> [expected-label]
+  local backend=$1 target=$2 label=${3:-} native_raw='' footer_state='' screen=''
+  local dialog='' prompt_line=''
+  fm_backend_source "$backend" || {
+    printf 'unproven\tbackend %s could not be loaded' "'$backend'"
+    return 0
+  }
+  # Visible dialog and prompt-row pending text checks
+  if fm_backend_visible_capture_supported "$backend"; then
+    if screen=$(fm_backend_visible_capture "$backend" "$target" "$label" 2>/dev/null); then
+      if dialog=$(fm_composer_blocking_dialog "$screen"); then
+        printf 'blocked\t%s' "$dialog"
+        return 0
+      fi
+      if printf '%s\n' "$screen" | grep -Fq 'Do you trust the contents of this project?'; then
+        printf 'blocked\tAntigravity folder-trust dialog'
+        return 0
+      fi
+      prompt_line=$(printf '%s\n' "$screen" | fm_composer_strip_ansi | grep -E '^[[:space:]]*>' | tail -n 1)
+      if [ -n "$prompt_line" ]; then
+        if printf '%s\n' "$prompt_line" | grep -Eq '^[[:space:]]*>[[:space:]]*[^[:space:]]'; then
+          printf 'pending\tcomposer visibly holds pending text'
+          return 0
+        fi
+      fi
+    else
+      printf 'unproven\tvisible screen could not be captured'
+      return 0
+    fi
+  fi
+  # Native agent-state on Herdr
+  if [ "$backend" = herdr ]; then
+    if fm_backend_herdr_target_ready "$target" 2>/dev/null; then
+      native_raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null) || native_raw=''
+    fi
+    case "$native_raw" in
+      working)
+        printf 'busy\tnative agent state is '\''working'\'', not idle'
+        return 0
+        ;;
+      blocked)
+        printf 'blocked\tnative agent state is '\''blocked'\'', waiting on a prompt'
+        return 0
+        ;;
+      idle|done)
+        native_raw=idle
+        ;;
+      *)
+        printf 'unproven\tnative agent state could not be classified'
+        return 0
+        ;;
+    esac
+  fi
+  # Delivery footer on tmux or herdr
+  footer_state=$(fm_backend_rendered_busy_state "$backend" "$target" agy 2>/dev/null) || footer_state=unknown
+  case "$footer_state" in
+    busy)
+      if [ -n "$native_raw" ] && [ "$native_raw" = idle ]; then
+        printf 'contradictory\tnative agent state is '\''idle'\'' but delivery footer shows busy'
+      else
+        printf 'busy\tdelivery footer shows the agent is busy'
+      fi
+      return 0
+      ;;
+    unknown)
+      printf 'unproven\tdelivery footer could not be classified'
+      return 0
+      ;;
+    idle)
+      if [ -z "$native_raw" ]; then
+        if ! printf '%s\n' "$screen" | grep -Fq '? for shortcuts'; then
+          printf 'unproven\tdelivery footer could not be classified'
+          return 0
+        fi
+      fi
+      ;;
+    *)
+      printf 'unproven\tdelivery footer returned unrecognized state %s' "'$footer_state'"
+      return 0
+      ;;
+  esac
+  printf 'idle\t'
+}
+
 # The per-task wiring artifacts a harness leaves behind, so a relaunch that
 # changes harness (or re-arms the same one with a fresh busy generation) can
 # clear the previous incarnation's wiring instead of leaving a stale hook

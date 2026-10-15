@@ -123,6 +123,10 @@
 #     classified state acts.
 #   - A composer that visibly holds pending text refuses before an exit command
 #     is typed, so existing text is preserved instead of being concatenated.
+#     The exit command requires a provably empty composer, except for agy
+#     which accepts verified idle evidence (native agent-state on Herdr,
+#     delivery footer on tmux/herdr) because its borderless bare prompt row
+#     classifies unknown under the dead-shell rule.
 #
 # Environment knobs (all bounded waits, seconds):
 #   FM_CONTROL_POLL              poll interval for postcondition waits (0.5)
@@ -718,7 +722,36 @@ do_exit() {
       die "task $ID's composer visibly holds pending text; refusing to type the $cmd exit command because it would concatenate onto that text. Clear or submit the pending text, then retry '$VERB'"
       ;;
     *)
-      die "task $ID's composer state is '$composer_state', not proven empty; refusing to type the $cmd exit command because it could concatenate onto existing text. Clear the composer, then retry '$VERB'"
+      # agy renders a borderless bare `>` prompt row that the shared classifier
+      # reads as unknown under the dead-shell rule, so its stop path accepts
+      # verified idle evidence (native agent-state on Herdr, delivery footer
+      # on tmux/herdr) as proof that typing the exit command is safe. Every other
+      # harness keeps the empty-composer requirement.
+      if [ "$HARNESS" = agy ]; then
+        agy_proof=$(fm_control_agy_idle_proof "$BACKEND" "$T" "$LABEL")
+        agy_verdict=${agy_proof%%$'\t'*}
+        agy_reason=${agy_proof#*$'\t'}
+        case "$agy_verdict" in
+          idle) ;;
+          pending)
+            die "task $ID's composer visibly holds pending text; refusing to type the $cmd exit command because it would concatenate onto that text. Clear or submit the pending text, then retry '$VERB'"
+            ;;
+          blocked)
+            refuse_blocking_prompt "$agy_reason"
+            ;;
+          busy)
+            die "task $ID is not idle ($agy_reason); refusing to type the $cmd exit command while the agent is busy"
+            ;;
+          contradictory)
+            die "task $ID's idle evidence is contradictory ($agy_reason); refusing to type the $cmd exit command"
+            ;;
+          unproven|*)
+            die "task $ID's composer state is '$composer_state' and idle evidence could not be established ($agy_reason); refusing to type the $cmd exit command because safety could not be proven"
+            ;;
+        esac
+      else
+        die "task $ID's composer state is '$composer_state', not proven empty; refusing to type the $cmd exit command because it could concatenate onto existing text. Clear the composer, then retry '$VERB'"
+      fi
       ;;
   esac
   # The submit verdict is NOT the postcondition here: a successful exit command

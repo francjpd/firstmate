@@ -83,6 +83,7 @@ case "${1:-}" in
           ;;
         *'encode launch-brief'* | *'Firstmate operational input waiting: read'*)
           cat "$D/becomes" > "$D/command"
+          [ ! -f "$D/pane-after-launch" ] || cat "$D/pane-after-launch" > "$D/pane"
           [ -z "${FM_FAKE_LAUNCH_TRANSPORT_FAIL_AFTER_START:-}" ] || exit 1
           ;;
       esac
@@ -119,6 +120,8 @@ case "${1:-}" in
     [ -z "${FM_FAKE_COMPOSER_READ_FAIL:-}" ] || exit 1
     if [ -s "$D/composer" ]; then
       printf '╭────╮\n│ %s  │\n╰────╯\n' "$(cat "$D/composer")"
+    elif [ -f "$D/pane" ]; then
+      cat "$D/pane"
     else
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
@@ -426,6 +429,108 @@ test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven() {
   assert_no_grep "/exit" "$dir/fake/literal" \
     "the exit command must not be typed when the composer state is not proven empty"
   pass "fm-control relaunch: an unreadable composer fails safe before the exit command is typed"
+}
+
+test_relaunch_admits_provably_idle_agy_worker() {
+  local dir out rc
+  dir=$(new_case idle-agy-exit rl45)
+  add_ship_task "$dir" rl45 agy
+  printf 'agy' > "$dir/fake/command"
+  printf 'agy' > "$dir/fake/becomes"
+  cat > "$dir/fakebin/agy" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$dir/fakebin/agy"
+  printf '> \n? for shortcuts\n' > "$dir/fake/pane"
+  printf '> \n? for shortcuts\n ⏺ 5s · esc to cancel · gemini-3.8-flash-low\n' > "$dir/fake/pane-after-launch"
+
+  out=$(run_control "$dir" rl45 relaunch --note "relaunch idle agy worker"); rc=$?
+
+  expect_code 0 "$rc" "a relaunch must admit a provably idle agy worker"$'\n'"$out"
+  assert_grep "/quit" "$dir/fake/literal" \
+    "the agy agent should have been stopped with /quit"
+  assert_grep "encode launch-brief" "$dir/fake/literal" \
+    "the replacement agy worker should have been launched"
+  [ "$(journal_field "$dir" rl45 phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  pass "fm-control relaunch: provably idle agy worker is admitted"
+}
+
+test_relaunch_refuses_agy_worker_when_delivery_footer_is_busy() {
+  local dir out rc
+  dir=$(new_case busy-agy-exit rl46)
+  add_ship_task "$dir" rl46 agy
+  printf 'agy' > "$dir/fake/command"
+  printf '> \n? for shortcuts\n ⏺ 5s · esc to cancel · gemini-3.8-flash-low\n' > "$dir/fake/pane"
+
+  out=$(run_control "$dir" rl46 relaunch --note "attempt relaunch while busy"); rc=$?
+
+  expect_code 1 "$rc" "a relaunch must refuse while agy delivery footer is busy"
+  assert_contains "$out" "refusing to type the /quit exit command while the agent is busy" \
+    "the refusal should name the busy state"
+  [ "$(cat "$dir/fake/command")" = agy ] \
+    || fail "a busy agy refusal must leave the old agent running"
+  assert_no_grep "/quit" "$dir/fake/literal" \
+    "the exit command must not be typed while the delivery footer shows busy"
+  pass "fm-control relaunch: agy worker with busy delivery footer refuses before exit"
+}
+
+test_relaunch_refuses_agy_worker_when_idle_evidence_is_unproven() {
+  local dir out rc
+  dir=$(new_case unproven-agy-exit rl47)
+  add_ship_task "$dir" rl47 agy
+  printf 'agy' > "$dir/fake/command"
+  printf '> \nunclassifiable pane content\n' > "$dir/fake/pane"
+
+  out=$(run_control "$dir" rl47 relaunch --note "attempt relaunch without idle proof"); rc=$?
+
+  expect_code 1 "$rc" "a relaunch must refuse when agy idle evidence cannot be established"
+  assert_contains "$out" "idle evidence could not be established" \
+    "the refusal should name unproven idle evidence"
+  [ "$(cat "$dir/fake/command")" = agy ] \
+    || fail "an unproven agy refusal must leave the old agent running"
+  assert_no_grep "/quit" "$dir/fake/literal" \
+    "the exit command must not be typed when idle evidence is unproven"
+  pass "fm-control relaunch: unproven agy idle evidence refuses before exit"
+}
+
+test_relaunch_refuses_agy_worker_when_prompt_or_dialog_is_visible() {
+  local dir out rc
+  dir=$(new_case dialog-agy-exit rl48)
+  add_ship_task "$dir" rl48 agy
+  printf 'agy' > "$dir/fake/command"
+  printf 'Do you trust the contents of this project?\n  Yes, I trust this folder\n' > "$dir/fake/pane"
+
+  out=$(run_control "$dir" rl48 relaunch --note "attempt relaunch on folder-trust dialog"); rc=$?
+
+  expect_code 1 "$rc" "a relaunch must refuse when agy is blocked on folder-trust dialog"
+  assert_contains "$out" "blocked on a prompt: Antigravity folder-trust dialog" \
+    "the refusal should name the blocking dialog"
+  [ "$(cat "$dir/fake/command")" = agy ] \
+    || fail "a dialog agy refusal must leave the old agent running"
+  assert_no_grep "/quit" "$dir/fake/literal" \
+    "the exit command must not be typed when blocked on dialog"
+  pass "fm-control relaunch: agy worker blocked on folder-trust dialog refuses before exit"
+}
+
+test_relaunch_refuses_agy_worker_when_composer_holds_pending_text() {
+  local dir out rc
+  dir=$(new_case pending-agy-exit rl49)
+  add_ship_task "$dir" rl49 agy
+  printf 'agy' > "$dir/fake/command"
+  printf '> /some pending text\n? for shortcuts\n' > "$dir/fake/pane"
+
+  out=$(run_control "$dir" rl49 relaunch --note "attempt relaunch with pending draft"); rc=$?
+
+  expect_code 1 "$rc" "a relaunch must refuse when agy prompt row holds pending text"
+  assert_contains "$out" "composer visibly holds pending text" \
+    "the refusal should name pending text"
+  [ "$(cat "$dir/fake/command")" = agy ] \
+    || fail "a pending agy refusal must leave the old agent running"
+  assert_no_grep "/quit" "$dir/fake/literal" \
+    "the exit command must not be typed when composer holds pending text"
+  pass "fm-control relaunch: agy worker with pending composer text refuses before exit"
 }
 
 test_relaunch_from_linked_home_preserves_recorded_worktree() {
@@ -2556,6 +2661,11 @@ test_exit_removes_the_dialog_file_before_releasing_the_lock
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
+test_relaunch_admits_provably_idle_agy_worker
+test_relaunch_refuses_agy_worker_when_delivery_footer_is_busy
+test_relaunch_refuses_agy_worker_when_idle_evidence_is_unproven
+test_relaunch_refuses_agy_worker_when_prompt_or_dialog_is_visible
+test_relaunch_refuses_agy_worker_when_composer_holds_pending_text
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication

@@ -1843,6 +1843,14 @@ fm_composer_blocking_dialog() {  # <screen> -> dialog name
     printf '%s' 'Claude background-task exit picker'
     return 0
   fi
+  if printf '%s' "$screen" | fm_composer_strip_ansi | LC_ALL=C awk '
+    /Do you trust the contents of this project\?/ { heading = 1 }
+    heading && /Yes, I trust this folder/ { selected = 1 }
+    END { exit !(heading && selected) }
+  '; then
+    printf '%s' 'Antigravity folder-trust dialog'
+    return 0
+  fi
   return 1
 }
 

@@ -914,6 +914,20 @@ fm_backend_busy_state() {  # <backend> <target>
   esac
 }
 
+# fm_backend_rendered_busy_state: busy|idle|unknown from the target's rendered
+# busy footer, scanning the pane tail folded to its non-blank rows.
+# Backends without a capture primitive report unknown.
+fm_backend_rendered_busy_state() {  # <backend> <target> [harness]
+  local backend=$1
+  shift
+  fm_backend_source "$backend" || { printf 'unknown'; return 0; }
+  case "$backend" in
+    tmux) fm_pane_busy_state "$@" ;;
+    herdr) fm_backend_herdr_rendered_busy_state "$@" ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
 # fm_backend_composer_state: classify the composer/input area of <target> as
 # empty|pending|pending-unproven|unknown for callers that need a pre-submit
 # input guard, a submit acknowledgement, or a launch-readiness check. It is
