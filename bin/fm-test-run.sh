@@ -1591,12 +1591,14 @@ families_for_changed_path() {
     bin/fm-extension.mjs|bin/fm-extension.sh|docs/examples/process-event-extension/*)
       printf '%s\n' __script__:fm-extension-binding.test.sh
       ;;
-    bin/fm-procevent.sh|bin/fm-procevent-lib.sh|bin/fm-procevent-extension-capture.pl)
+    bin/fm-procevent.sh|bin/fm-procevent-lib.sh|bin/fm-procevent-extension-capture.pl|\
+    .pi/extensions/fm-primary-pi-watch.ts)
       printf '%s\n' __script__:fm-extension-binding.test.sh
       printf '%s\n' __script__:fm-procevent.test.sh
       printf '%s\n' __script__:fm-procevent-when.test.sh
       printf '%s\n' __script__:fm-remote-reply.test.sh
       printf '%s\n' __script__:fm-transport-lanes.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
       ;;
     bin/fm-timeout-lib.sh)
       # The shared hard bound: session start's runtime bound, the fleet/bearings

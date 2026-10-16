@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Behavioral tests for the two-lane transport refactor:
+# Behavioral tests for the two-lane transport refactor and duplicate ring deduplication:
 # - Fast-lane event delivery without slow-lane sweep (ring recorded, zero cycle exits).
 # - Fast-lane event arriving while session is down delivered once on recovery from durable record.
 # - Slow lane still finds slow events and slow pass does not delay fast-lane events.
 # - Structured consumption strips DOM snapshots and redundant instructions.
 # - Pi primary extension delivers fast-lane rings directly.
+# - One wake per event identity across pending, delivered, and acknowledged states.
+# - Deduplication never swallows real events or sequences across mid-turn and restart.
+# - Duplicates reaching session cost nothing (aborted, cached response).
+# - Repetition stopped at source (reconcile burst throttled by ring cadence).
+# - Lost rings rescued by slow lane (surfaced marker not stamped at ring time).
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -349,10 +354,334 @@ EOF
   pass "Pi primary extension watches fast-lane and delivers wake prompt directly"
 }
 
+test_one_wake_per_event_identity() {
+  local repo home plugin out
+  repo="$TMP_ROOT/pi-dedup-root"
+  home="$TMP_ROOT/pi-dedup-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$home/state/fast-lane" "$home/state/procevent-inbox"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+while :; do sleep 0.1; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+function makePi() {
+  const handlers = new Map();
+  const prompts = [];
+  const pi = {
+    on(event, handler) { handlers.set(event, handler); },
+    registerCommand() {},
+    registerTool() {},
+    sendUserMessage: async (message) => { prompts.push(message); },
+    events: { on() {}, emit() {} },
+  };
+  return { pi, handlers, prompts };
+}
+
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const inst = makePi();
+mod.default(inst.pi);
+await inst.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
+
+const fastLaneDir = `${process.env.FM_HOME}/state/fast-lane`;
+const ringPayload = {
+  version: 1,
+  id: "test-board",
+  seq: 1,
+  adapter: "lavish",
+  result: `${process.env.FM_HOME}/state/procevent-inbox/test-board.1.result`,
+  reason: "check: procevent lavish test-board 1",
+};
+
+// 1. Initial ring delivers one prompt
+writeFileSync(`${fastLaneDir}/test-board.1.ring.json`, JSON.stringify(ringPayload) + "\n");
+await waitFor(() => inst.prompts.length === 1, "first ring delivery");
+
+// 2. Repeat ring while still pending: must create neither pending record nor follow-up
+writeFileSync(`${fastLaneDir}/test-board.1.ring.json`, JSON.stringify(ringPayload) + "\n");
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (inst.prompts.length !== 1) throw new Error(`repeat ring while pending created extra prompt: ${inst.prompts.length}`);
+
+// 3. Consume the wake (session reaches before_agent_start)
+await inst.handlers.get("before_agent_start")?.({ messageType: "user", prompt: inst.prompts[0] }, {});
+
+// 4. Repeat ring after delivered: must create neither pending record nor follow-up
+writeFileSync(`${fastLaneDir}/test-board.1.ring.json`, JSON.stringify(ringPayload) + "\n");
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (inst.prompts.length !== 1) throw new Error(`repeat ring after delivered created extra prompt: ${inst.prompts.length}`);
+
+// 5. Mark handled (.handled file written)
+writeFileSync(`${process.env.FM_HOME}/state/procevent-inbox/test-board.1.handled`, "\n");
+
+// 6. Repeat ring after handled/acknowledged: must create neither pending record nor follow-up
+writeFileSync(`${fastLaneDir}/test-board.1.ring.json`, JSON.stringify(ringPayload) + "\n");
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (inst.prompts.length !== 1) throw new Error(`repeat ring after handled created extra prompt: ${inst.prompts.length}`);
+
+process.exit(0);
+EOF
+)
+  expect_code 0 "$?" "one wake per event identity: $out"
+  pass "one wake per event identity across pending, delivered, and acknowledged states"
+}
+
+test_deduplication_never_swallows_real_event() {
+  local repo home plugin out
+  repo="$TMP_ROOT/pi-real-events-root"
+  home="$TMP_ROOT/pi-real-events-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$home/state/fast-lane" "$home/state/procevent-inbox"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+while :; do sleep 0.1; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+function makePi() {
+  const handlers = new Map();
+  const prompts = [];
+  let streaming = false;
+  const pi = {
+    on(event, handler) { handlers.set(event, handler); },
+    registerCommand() {},
+    registerTool() {},
+    sendUserMessage: async (message) => {
+      prompts.push(message);
+    },
+    events: { on() {}, emit() {} },
+  };
+  return { pi, handlers, prompts, setStreaming: (s) => { streaming = s; } };
+}
+
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const inst = makePi();
+mod.default(inst.pi);
+await inst.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
+
+const fastLaneDir = `${process.env.FM_HOME}/state/fast-lane`;
+
+// Case A: Event arrives and is delivered
+const ringPayload1 = {
+  version: 1,
+  id: "test-board",
+  seq: 1,
+  adapter: "lavish",
+  result: `${process.env.FM_HOME}/state/procevent-inbox/test-board.1.result`,
+  reason: "check: procevent lavish test-board 1",
+};
+writeFileSync(`${fastLaneDir}/test-board.1.ring.json`, JSON.stringify(ringPayload1) + "\n");
+await waitFor(() => inst.prompts.length === 1, "first event delivery");
+
+// Case B: Mid-turn arrival of distinct second sequence for same source
+const ringPayload2 = {
+  version: 1,
+  id: "test-board",
+  seq: 2,
+  adapter: "lavish",
+  result: `${process.env.FM_HOME}/state/procevent-inbox/test-board.2.result`,
+  reason: "check: procevent lavish test-board 2",
+};
+inst.setStreaming(true);
+writeFileSync(`${fastLaneDir}/test-board.2.ring.json`, JSON.stringify(ringPayload2) + "\n");
+await waitFor(() => inst.prompts.length === 2, "second sequence delivery during streaming");
+
+// Repeat of sequence 2 while streaming must be dropped
+writeFileSync(`${fastLaneDir}/test-board.2.ring.json`, JSON.stringify(ringPayload2) + "\n");
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (inst.prompts.length !== 2) throw new Error("duplicate of sequence 2 was not dropped during streaming");
+
+// Stream ends, message consumed
+inst.setStreaming(false);
+await inst.handlers.get("message_start")?.({ message: { role: "user", content: [{ type: "text", text: inst.prompts[1] }] } }, {});
+
+// Case C: Distinct source id arrives and is delivered
+const ringPayload3 = {
+  version: 1,
+  id: "other-board",
+  seq: 1,
+  adapter: "lavish",
+  result: `${process.env.FM_HOME}/state/procevent-inbox/other-board.1.result`,
+  reason: "check: procevent lavish other-board 1",
+};
+writeFileSync(`${fastLaneDir}/other-board.1.ring.json`, JSON.stringify(ringPayload3) + "\n");
+await waitFor(() => inst.prompts.length === 3, "distinct source id delivery");
+
+process.exit(0);
+EOF
+)
+  expect_code 0 "$?" "deduplication never swallows real events: $out"
+  pass "deduplication delivers real events and sequences across mid-turn and distinct identities"
+}
+
+test_duplicate_reaching_session_costs_nothing() {
+  local repo home plugin out
+  repo="$TMP_ROOT/pi-duplicate-cost-root"
+  home="$TMP_ROOT/pi-duplicate-cost-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$home/state/fast-lane" "$home/state/procevent-inbox"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+while :; do sleep 0.1; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+function makePi() {
+  const handlers = new Map();
+  const prompts = [];
+  const pi = {
+    on(event, handler) { handlers.set(event, handler); },
+    registerCommand() {},
+    registerTool() {},
+    sendUserMessage: async (message) => { prompts.push(message); },
+    events: { on() {}, emit() {} },
+  };
+  return { pi, handlers, prompts };
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const inst = makePi();
+mod.default(inst.pi);
+await inst.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
+
+const wakePrompt = "FIRSTMATE WATCHER WAKE: check: procevent lavish test-board 1\n\nRun bin/fm-wake-drain.sh first and handle the queued wake.";
+
+// First presentation: ordinary turn start (not aborted)
+let turn1Aborted = false;
+const ctx1 = { abort: () => { turn1Aborted = true; } };
+const res1 = await inst.handlers.get("before_agent_start")?.({ messageType: "user", prompt: wakePrompt }, ctx1);
+if (turn1Aborted) throw new Error("first presentation was unexpectedly aborted");
+if (res1?.message) throw new Error("first presentation returned cached assistant response unexpectedly");
+
+// Second presentation (duplicate reaches session): aborted and returns cached response
+let turn2Aborted = false;
+const ctx2 = { abort: () => { turn2Aborted = true; } };
+const res2 = await inst.handlers.get("before_agent_start")?.({ messageType: "user", prompt: wakePrompt }, ctx2);
+if (!turn2Aborted) throw new Error("duplicate presentation was not aborted");
+if (!res2?.message?.content?.[0]?.text?.includes("already delivered")) {
+  throw new Error(`duplicate presentation did not return cached response: ${JSON.stringify(res2)}`);
+}
+
+process.exit(0);
+EOF
+)
+  expect_code 0 "$?" "duplicate reaching session costs nothing: $out"
+  pass "duplicate procevent reaching session is aborted without model regeneration"
+}
+
+test_stop_repetition_at_source() {
+  local home ring_log count
+  home="$TMP_ROOT/stop-repetition-home"
+  new_home "$home"
+  printf '%s\n' "$$" > "$home/state/.lock"
+
+  mkdir -p "$home/state/procevent-inbox"
+  cat > "$home/state/procevent-inbox/burst.1.result" <<'EOF'
+session:
+  file: /burst.html
+  status: feedback
+feedback[1]{prompt,target}:
+  "Burst feedback", "#target"
+EOF
+  printf 'lavish\n' > "$home/state/procevent-inbox/burst.1.adapter"
+  ring_log="$home/state/.fast-lane-ring.log"
+
+  # Run reconcile 17 times in rapid succession
+  for _ in $(seq 1 17); do
+    FM_HOME="$home" FM_FAST_LANE_RING_LOG="$ring_log" \
+      "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null 2>&1
+  done
+
+  count=$(wc -l < "$ring_log" | tr -d ' ')
+  [ "$count" -eq 1 ] || fail "burst of 17 reconciles produced $count rings instead of 1"
+
+  # After cadence expires, re-ring is allowed as recovery path
+  sleep 1.1
+  FM_HOME="$home" FM_FAST_LANE_RING_LOG="$ring_log" FM_PROCEVENT_RING_CADENCE_SECS=1 \
+    "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null 2>&1
+
+  count=$(wc -l < "$ring_log" | tr -d ' ')
+  [ "$count" -eq 2 ] || fail "expired cadence did not allow re-ring recovery ($count rings)"
+
+  pass "repetition stopped at source (17 rapid reconciles yield 1 ring, re-ring allowed after cadence)"
+}
+
+test_lost_ring_rescued_by_slow_lane() {
+  local home drain_out key hex marker_path
+  home="$TMP_ROOT/lost-ring-home"
+  new_home "$home"
+  printf '%s\n' "$$" > "$home/state/.lock"
+
+  mkdir -p "$home/state/procevent-inbox"
+  cat > "$home/state/procevent-inbox/lost.1.result" <<'EOF'
+session:
+  file: /lost.html
+  status: feedback
+feedback[1]{prompt,target}:
+  "Lost review feedback", "#target"
+EOF
+  printf 'lavish\n' > "$home/state/procevent-inbox/lost.1.adapter"
+
+  # Capture and reconcile (rings fast lane, but session does not receive it)
+  FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null 2>&1
+
+  # Assert 1: The surfaced marker was NOT stamped at ring time
+  key="procevent:lost:1"
+  hex=$(printf '%s' "$key" | LC_ALL=C od -An -tx1 | tr -d ' \n')
+  marker_path="$home/state/.seen-procevent-$hex"
+  [ ! -e "$marker_path" ] || fail "surfaced marker was prematurely stamped at ring time"
+
+  # Assert 2: Slow-lane drain finds and surfaces the lost event
+  drain_out=$(FM_HOME="$home" "$ROOT/bin/fm-wake-drain.sh" 2>/dev/null)
+  assert_contains "$drain_out" "procevent lavish lost 1" \
+    "slow lane failed to rescue lost event"
+
+  pass "lost fast-lane ring is rescued by slow lane because surfaced marker was not stamped at ring time"
+}
+
 test_fast_lane_delivered_without_slow_lane_sweep
 test_fast_lane_down_session_recovery
 test_slow_lane_still_finds_slow_events_and_slow_pass_does_not_delay_fast_lane
 test_structured_consumption_strips_dom_snapshot_and_instructions
 test_pi_extension_fast_lane_ringing
+test_one_wake_per_event_identity
+test_deduplication_never_swallows_real_event
+test_duplicate_reaching_session_costs_nothing
+test_stop_repetition_at_source
+test_lost_ring_rescued_by_slow_lane
 
 printf '\nall transport lane tests passed\n'

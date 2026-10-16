@@ -520,7 +520,9 @@ It also covers generation-claim single-flight, stuck-claim supersession, superse
 
 Firstmate splits wake transport into two distinct lanes:
 
-- **Fast lane**: for events with an active listener (such as Lavish review boards or push sockets). On event arrival, the listener writes the event durably to `state/procevent-inbox/` and `state/.wake-queue` before ringing the running session directly (`state/.fast-lane-ring.log`, `state/fast-lane/` for Pi extension, and supervisor doorbell). Because the surfaced marker is stamped immediately, the slow-lane watcher does not exit or duplicate delivery.
+- **Fast lane**: for events with an active listener (such as Lavish review boards or push sockets).
+  On event arrival, the listener writes the event durably to `state/procevent-inbox/` and `state/.wake-queue` before ringing the running session directly (`state/.fast-lane-ring.log`, `state/fast-lane/` for Pi extension, and supervisor doorbell).
+  The surfaced marker is left unstamped at ring time so the slow-lane watcher can rescue an event whose fast-lane ring was lost, while session deduplication keeps repeated rings from duplicating work.
 - **Slow lane**: for background checks without a listener (worker liveness, status changes, PR checks, quota windows, clone drift). Operates on its regular cadence (`bin/fm-watch.sh`), provably incapable of delaying fast-lane events.
 - **Structured consumption**: consumers read the structured view via adapter commands (`bin/fm-procevent-lavish.sh read`), keeping raw DOM snapshots and redundant transport instruction blocks out of model context.
 

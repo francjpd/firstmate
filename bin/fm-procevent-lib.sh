@@ -1294,10 +1294,16 @@ fm_procevent_mark_handled() {
   fi
   if ln "$tmp" "$marker" 2>/dev/null; then
     rm -f -- "$tmp"
+    rm -f -- "$(fm_procevent_ring_marker "$state" "procevent:$id:$seq")" \
+             "$(fm_procevent_surfaced_marker "$state" "procevent:$id:$seq")" 2>/dev/null || true
     return 0
   fi
   rm -f -- "$tmp"
-  [ -f "$marker" ] && [ ! -L "$marker" ] && return 1
+  if [ -f "$marker" ] && [ ! -L "$marker" ]; then
+    rm -f -- "$(fm_procevent_ring_marker "$state" "procevent:$id:$seq")" \
+             "$(fm_procevent_surfaced_marker "$state" "procevent:$id:$seq")" 2>/dev/null || true
+    return 1
+  fi
   return 2
 }
 
@@ -1364,6 +1370,13 @@ fm_procevent_result_extension_load() {  # <result-path>
   fm_procevent_digest_valid "$FM_PROCEVENT_RESULT_EXTENSION_BINDING_DIGEST" || return 2
 }
 
+# Canonical marker path for a procevent fast-lane ring, holding the epoch
+# of the last ring announcement so rapid reconciles do not burst rings.
+fm_procevent_ring_marker() {  # <state> <queue-key>
+  local state=$1 key=$2
+  printf '%s/.ring-procevent-%s' "$state" "$(printf '%s' "$key" | LC_ALL=C od -An -tx1 | tr -d ' \n')"
+}
+
 # fm_procevent_surfaced_marker <state> <queue-key>
 # Canonical marker path for a procevent wake that has been surfaced or fast-lane
 # delivered, so the slow-lane watcher does not duplicate delivery or exit its cycle.
@@ -1386,11 +1399,33 @@ fm_procevent_fast_lane_log() {  # <state>
 # Ring the running session directly on the fast lane when a listener-backed
 # event arrives, after durable capture. Write, then ring: the event is already
 # stored in procevent-inbox/ and queued in state/.wake-queue before this runs.
-# Marks the surfaced marker so the slow-lane watcher cycle is not interrupted.
 fm_procevent_ring_primary() {
   local state=$1 adapter=$2 id=$3 seq=$4 result=$5 reason=$6
-  local ring_log ring_dir marker tmp json_tmp json_target epoch
+  local ring_log ring_dir ring_marker tmp json_tmp json_target epoch last_ring=0 cadence key
   epoch=$(date +%s)
+  key="procevent:$id:$seq"
+  ring_marker=$(fm_procevent_ring_marker "$state" "$key")
+  cadence=${FM_PROCEVENT_RING_CADENCE_SECS:-30}
+  case "$cadence" in ''|*[!0-9]*) cadence=30 ;; esac
+
+  # Stop repetition at its source: ring only when publication is genuinely
+  # new for that identity, or bound the re-announcement cadence so a burst cannot occur.
+  # The durable queue row remains the at-least-once authority.
+  if [ -f "$ring_marker" ] && [ ! -L "$ring_marker" ]; then
+    last_ring=$(cat "$ring_marker" 2>/dev/null || echo 0)
+    case "$last_ring" in ''|*[!0-9]*) last_ring=0 ;; esac
+  fi
+  if [ "$last_ring" -gt 0 ] && [ $((epoch - last_ring)) -lt "$cadence" ]; then
+    return 0
+  fi
+
+  # Record the ring epoch in the ring marker.
+  tmp=$(umask 077; mktemp "$state/.ring-procevent.XXXXXX" 2>/dev/null || true)
+  if [ -n "$tmp" ]; then
+    printf '%s\n' "$epoch" > "$tmp" 2>/dev/null || true
+    mv -f -- "$tmp" "$ring_marker" 2>/dev/null || rm -f -- "$tmp"
+  fi
+
   ring_log=$(fm_procevent_fast_lane_log "$state")
   mkdir -p "${ring_log%/*}" 2>/dev/null || true
   printf '%s\tring\tfast-lane\t%s\t%s\t%s\t%s\n' "$epoch" "$adapter" "$id" "$seq" "$reason" >> "$ring_log"
@@ -1398,12 +1433,10 @@ fm_procevent_ring_primary() {
     printf '%s\tring\tfast-lane\t%s\t%s\t%s\t%s\n' "$epoch" "$adapter" "$id" "$seq" "$reason" >> "$FM_SEND_LOG" 2>/dev/null || true
   fi
 
-  # Stamp the surfaced marker immediately so the slow-lane watcher does not exit its cycle.
-  marker=$(fm_procevent_surfaced_marker "$state" "procevent:$id:$seq")
-  tmp=$(umask 077; mktemp "$state/.seen-procevent.XXXXXX" 2>/dev/null || true)
-  if [ -n "$tmp" ]; then
-    mv -f -- "$tmp" "$marker" 2>/dev/null || rm -f -- "$tmp"
-  fi
+  # A lost ring must still reach the session.
+  # The surfaced marker must not be stamped at ring time because delivery is not yet proven;
+  # leaving it unstamped allows the slow-lane watcher to rescue an event whose fast-lane ring was lost.
+  # The captain's decision: an occasional duplicate is better than a lost message.
 
   # Fast-lane signal to Pi primary watch extension if directory is active or present.
   ring_dir=$(fm_procevent_fast_lane_ring_dir "$state")

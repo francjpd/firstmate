@@ -35,7 +35,7 @@
 // consumption changes.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -73,6 +73,7 @@ type PendingActionableClose = {
   message: string;
   predecessorArmPid: string;
   delivered?: true;
+  eventIdentity?: string;
 };
 
 type ReplacementActionableHandoff = {
@@ -394,7 +395,9 @@ function validatePendingActionable(value: unknown): PendingActionableClose {
     typeof (value as { predecessorArmPid?: unknown }).predecessorArmPid !== "string" ||
     !/^[0-9]*$/.test((value as { predecessorArmPid: string }).predecessorArmPid) ||
     ((value as { delivered?: unknown }).delivered !== undefined &&
-      (value as { delivered?: unknown }).delivered !== true)
+      (value as { delivered?: unknown }).delivered !== true) ||
+    ((value as { eventIdentity?: unknown }).eventIdentity !== undefined &&
+      typeof (value as { eventIdentity?: unknown }).eventIdentity !== "string")
   ) {
     throw new Error(`invalid Pi replacement actionable handoff at ${actionableHandoff}`);
   }
@@ -510,6 +513,64 @@ function classifyClose(stdout: string, stderr: string, code: number | null, sign
     kind: "failure",
     message: "watcher: FAILED - Pi extension arm cycle ended without an actionable reason",
   };
+}
+
+function extractProceventIdentity(text: string): string | null {
+  const match = /procevent\s+([A-Za-z0-9._-]+)\s+([A-Za-z0-9._-]+)\s+([0-9]+)/.exec(text);
+  if (!match) return null;
+  return `${match[1]}:${match[2]}:${match[3]}`;
+}
+
+const MAX_DELIVERED_IDENTITIES = 1000;
+const deliveredIdentities = new Map<string, { timestamp: number; response?: string }>();
+
+// Bounded cache of delivered event identities (adapter:id:seq).
+// An entry is added when a fast-lane or slow-lane wake for that identity is delivered.
+// Entries are cleared / evicted when:
+// 1. The cache exceeds MAX_DELIVERED_IDENTITIES (FIFO eviction of the oldest entries).
+// 2. An event is acknowledged and retired (the durable .handled marker in procevent-inbox/
+//    becomes the permanent tombstone, so the in-memory entry is no longer needed).
+// 3. A session shutdown without replacement clears in-memory session state.
+function isIdentityDelivered(identity: string): boolean {
+  return deliveredIdentities.has(identity);
+}
+
+function recordDeliveredIdentity(identity: string, response?: string): void {
+  if (deliveredIdentities.size >= MAX_DELIVERED_IDENTITIES) {
+    const oldestKey = deliveredIdentities.keys().next().value;
+    if (oldestKey) deliveredIdentities.delete(oldestKey);
+  }
+  deliveredIdentities.set(identity, { timestamp: Date.now(), response });
+}
+
+function stampSurfacedMarker(stateDir: string, identity: string): void {
+  const parts = identity.split(":");
+  if (parts.length < 3) return;
+  const key = `procevent:${parts[1]}:${parts[2]}`;
+  const hex = Buffer.from(key, "utf8").toString("hex");
+  const markerPath = resolve(stateDir, `.seen-procevent-${hex}`);
+  try {
+    writeFileSync(markerPath, "");
+  } catch {}
+}
+
+function isIdentityAcknowledged(stateDir: string, identity: string): boolean {
+  const parts = identity.split(":");
+  if (parts.length < 3) return false;
+  const handledPath = resolve(stateDir, "procevent-inbox", `${parts[1]}.${parts[2]}.handled`);
+  return existsSync(handledPath);
+}
+
+function isIdentityPending(owner: SessionGeneration, identity: string): boolean {
+  for (const item of owner.pendingActionables) {
+    if (item.eventIdentity === identity) return true;
+    if (extractProceventIdentity(item.message) === identity) return true;
+  }
+  for (const [, wake] of owner.unconsumedWakes) {
+    if (wake.pending.eventIdentity === identity) return true;
+    if (extractProceventIdentity(wake.content) === identity) return true;
+  }
+  return false;
 }
 
 function createGeneration(): SessionGeneration {
@@ -661,17 +722,33 @@ export default function (pi: ExtensionAPI) {
   // Pi consumed a main follow-up: an idle main at before_agent_start, a
   // streaming main at the user message_start that joins the running run.
   function consumeWake(owner: SessionGeneration, text: string): void {
+    const matchedTokens: string[] = [];
+    const textIdentity = extractProceventIdentity(text);
     for (const [token, wake] of owner.unconsumedWakes) {
-      if (wake.content !== text) continue;
+      const match =
+        wake.content === text ||
+        Boolean(
+          textIdentity &&
+            (wake.pending.eventIdentity === textIdentity ||
+              extractProceventIdentity(wake.content) === textIdentity),
+        );
+      if (!match) continue;
+      matchedTokens.push(token);
+    }
+    for (const token of matchedTokens) {
+      const wake = owner.unconsumedWakes.get(token);
+      if (!wake) continue;
       owner.unconsumedWakes.delete(token);
       wake.pending.delivered = true;
+      if (wake.pending.eventIdentity) {
+        recordDeliveredIdentity(wake.pending.eventIdentity);
+      }
       try {
         finishPendingActionable(owner, wake.pending);
       } catch (error) {
         surfaceCleanupFailure(owner, error);
         schedulePendingCleanup(owner);
       }
-      return;
     }
   }
 
@@ -838,10 +915,31 @@ export default function (pi: ExtensionAPI) {
         continue;
       }
       const reason = parsed.reason || `check: procevent ${parsed.adapter || "unknown"} ${parsed.id || "0"} ${parsed.seq || 0}`;
+      const eventIdentity = parsed.adapter && parsed.id && parsed.seq !== undefined
+        ? `${parsed.adapter}:${parsed.id}:${parsed.seq}`
+        : extractProceventIdentity(reason);
+
+      if (eventIdentity) {
+        if (
+          isIdentityPending(owner, eventIdentity) ||
+          isIdentityDelivered(eventIdentity) ||
+          isIdentityAcknowledged(state, eventIdentity)
+        ) {
+          appendExtensionLog(`ring fast-lane duplicate dropped identity=${eventIdentity}`);
+          continue;
+        }
+      }
+
       appendExtensionLog(`ring fast-lane reason=${reason}`);
       const pending = createPendingActionable(reason, "");
+      if (eventIdentity) pending.eventIdentity = eventIdentity;
       enqueuePendingActionable(owner, pending);
-      void deliverActionableWake(owner, reason, false, pending);
+      void deliverActionableWake(owner, reason, false, pending).then((delivered) => {
+        if (delivered && eventIdentity) {
+          recordDeliveredIdentity(eventIdentity);
+          stampSurfacedMarker(state, eventIdentity);
+        }
+      });
     }
   }
 
@@ -1252,13 +1350,33 @@ export default function (pi: ExtensionAPI) {
     return result;
   }
 
-  pi.on?.("before_agent_start", (event) => {
+  pi.on?.("before_agent_start", (event, ctx) => {
     if (event.messageType !== "user") return;
     consumeWake(generation, event.prompt);
+    const identity = extractProceventIdentity(event.prompt);
+    if (identity) {
+      if (isIdentityDelivered(identity) || isIdentityAcknowledged(state, identity)) {
+        appendExtensionLog(`suppress duplicate session turn identity=${identity}`);
+        ctx?.abort?.();
+        const stored = deliveredIdentities.get(identity);
+        return {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: stored?.response || `[firstmate] event ${identity} already delivered; duplicate suppressed.` }],
+          },
+        };
+      }
+      recordDeliveredIdentity(identity);
+    }
   });
   pi.on?.("message_start", (event) => {
     if (event.message.role !== "user") return;
-    consumeWake(generation, userMessageText(event.message.content));
+    const text = userMessageText(event.message.content);
+    consumeWake(generation, text);
+    const identity = extractProceventIdentity(text);
+    if (identity) {
+      recordDeliveredIdentity(identity);
+    }
   });
 
   pi.on?.("session_start", async () => {
@@ -1270,6 +1388,9 @@ export default function (pi: ExtensionAPI) {
   pi.on?.("session_shutdown", async (event) => {
     const replacement = event.reason === "reload" || event.reason === "new" || event.reason === "resume" || event.reason === "fork";
     if (replacementCoordinator.receiver === receiveReplacementActionable) replacementCoordinator.receiver = null;
+    if (!replacement) {
+      deliveredIdentities.clear();
+    }
     await stopSessionGeneration(generation, replacement);
   });
 
