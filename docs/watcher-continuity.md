@@ -14,6 +14,7 @@ In this document, an arm is one run of `bin/fm-watch-arm.sh`, which starts a wat
 | How a watcher-downtime episode is announced and retired | [Recovery episode acknowledgement](#recovery-episode-acknowledgement) |
 | How each actor consumes the wake queue | [Per-actor acknowledgement](#per-actor-acknowledgement) |
 | What `bin/fm-watch-arm.sh` guarantees about each cycle | [Arm-layer cycle contract](#arm-layer-cycle-contract) |
+| How fast-lane listener events ring immediately without watcher cycles | [Transport lanes](#transport-lanes) |
 | Which test suites pin these contracts | [Regression coverage](#regression-coverage) |
 | What is not guaranteed, and where live evidence lives | [Active limits and verification](#active-limits-and-verification) |
 
@@ -515,7 +516,13 @@ It also covers generation-claim single-flight, stuck-claim supersession, superse
 - Post-alarm continuation suppression.
 - Positive recovery reset.
 
-[`turnend-guard.md`](turnend-guard.md#regression-coverage) lists that suite's full generation and legacy claim coverage.
+## Transport lanes
+
+Firstmate splits wake transport into two distinct lanes:
+
+- **Fast lane**: for events with an active listener (such as Lavish review boards or push sockets). On event arrival, the listener writes the event durably to `state/procevent-inbox/` and `state/.wake-queue` before ringing the running session directly (`state/.fast-lane-ring.log`, `state/fast-lane/` for Pi extension, and supervisor doorbell). Because the surfaced marker is stamped immediately, the slow-lane watcher does not exit or duplicate delivery.
+- **Slow lane**: for background checks without a listener (worker liveness, status changes, PR checks, quota windows, clone drift). Operates on its regular cadence (`bin/fm-watch.sh`), provably incapable of delaying fast-lane events.
+- **Structured consumption**: consumers read the structured view via adapter commands (`bin/fm-procevent-lavish.sh read`), keeping raw DOM snapshots and redundant transport instruction blocks out of model context.
 
 ## Active limits and verification
 

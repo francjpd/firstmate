@@ -35,7 +35,7 @@
 // consumption changes.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -117,6 +117,7 @@ type SessionGeneration = {
   // still delivering the wake it was started for; its bounded retry runs once
   // that delivery settles instead of being skipped by the single-flight guard.
   deferredClose: { message: string; predecessorArmPid: string } | null;
+  fastLaneWatcher: ReturnType<typeof watch> | null;
 };
 
 function refreshWatchToolShell(
@@ -148,6 +149,7 @@ const config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
 const armScript = `${fmRoot}/bin/fm-watch-arm.sh`;
 const marker = `${state}/.pi-watch-extension-loaded`;
 const handoffDir = `${state}/extensions/pi-primary-watch`;
+const fastLaneDir = `${state}/fast-lane`;
 const actionableHandoff = `${handoffDir}/session-replacement-actionable.json`;
 const extensionLog = `${state}/.watch-extension.log`;
 const extensionLogMaxLines = extensionLogKeepLines();
@@ -525,6 +527,7 @@ function createGeneration(): SessionGeneration {
     cleanupFailure: "",
     unconsumedWakes: new Map(),
     deferredClose: null,
+    fastLaneWatcher: null,
   };
 }
 
@@ -542,6 +545,12 @@ function relinquishGeneration(generation: SessionGeneration): void {
   if (generation.cleanupTimer) clearTimeout(generation.cleanupTimer);
   generation.retryTimer = null;
   generation.cleanupTimer = null;
+  if (generation.fastLaneWatcher) {
+    try {
+      generation.fastLaneWatcher.close();
+    } catch {}
+    generation.fastLaneWatcher = null;
+  }
   if (generation.child) retiringGenerations.add(generation);
 }
 
@@ -802,6 +811,38 @@ export default function (pi: ExtensionAPI) {
     const index = owner.pendingActionables.findIndex((item) => item.token === pending.token);
     if (index >= 0) owner.pendingActionables.splice(index, 1);
     owner.cleanupFailure = "";
+  }
+
+  function processFastLaneRings(owner: SessionGeneration): void {
+    if (!generationIsLive(owner)) return;
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(fastLaneDir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith(".ring.json")) continue;
+      const fullPath = resolve(fastLaneDir, entry);
+      let content = "";
+      try {
+        content = readFileSync(fullPath, "utf8");
+        unlinkSync(fullPath);
+      } catch {
+        continue;
+      }
+      let parsed: { reason?: string; adapter?: string; id?: string; seq?: number } = {};
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        continue;
+      }
+      const reason = parsed.reason || `check: procevent ${parsed.adapter || "unknown"} ${parsed.id || "0"} ${parsed.seq || 0}`;
+      appendExtensionLog(`ring fast-lane reason=${reason}`);
+      const pending = createPendingActionable(reason, "");
+      enqueuePendingActionable(owner, pending);
+      void deliverActionableWake(owner, reason, false, pending);
+    }
   }
 
   function surfaceCleanupFailure(
@@ -1173,6 +1214,18 @@ export default function (pi: ExtensionAPI) {
     if (!generationIsLive(owner)) return { ok: false, message: shuttingDownMessage };
     if (lockOwnership() !== "owned") return startArm(owner);
     replacementCoordinator.receiver = receiveReplacementActionable;
+    try {
+      mkdirSync(fastLaneDir, { recursive: true, mode: 0o700 });
+    } catch {}
+    processFastLaneRings(owner);
+    if (!owner.fastLaneWatcher) {
+      try {
+        owner.fastLaneWatcher = watch(fastLaneDir, () => {
+          processFastLaneRings(owner);
+        });
+        owner.fastLaneWatcher.unref?.();
+      } catch {}
+    }
     let pending: PendingActionableClose[] = [];
     let loadFailure = "";
     try {

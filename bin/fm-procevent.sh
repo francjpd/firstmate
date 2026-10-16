@@ -891,6 +891,7 @@ EOF
     unset FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD
     if fm_wake_append check "procevent:$id:$seq" "check: $line"; then
       status=0
+      fm_procevent_ring_primary "$STATE" "$adapter" "$id" "$seq" "$result" "check: $line" || true
     fi
   fi
   fm_procevent_source_lock_release "$id"

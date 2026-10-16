@@ -1363,3 +1363,74 @@ fm_procevent_result_extension_load() {  # <result-path>
   fm_procevent_digest_valid "$FM_PROCEVENT_RESULT_EXTENSION_PACKAGE_DIGEST" || return 2
   fm_procevent_digest_valid "$FM_PROCEVENT_RESULT_EXTENSION_BINDING_DIGEST" || return 2
 }
+
+# fm_procevent_surfaced_marker <state> <queue-key>
+# Canonical marker path for a procevent wake that has been surfaced or fast-lane
+# delivered, so the slow-lane watcher does not duplicate delivery or exit its cycle.
+fm_procevent_surfaced_marker() {  # <state> <queue-key>
+  local state=$1 key=$2
+  printf '%s/.seen-procevent-%s' "$state" "$(printf '%s' "$key" | LC_ALL=C od -An -tx1 | tr -d ' \n')"
+}
+
+# Fast-lane ring delivery root for primary extensions (e.g. Pi).
+fm_procevent_fast_lane_ring_dir() {  # <state>
+  printf '%s/fast-lane\n' "$1"
+}
+
+# The single owner for the fast-lane ring log path.
+fm_procevent_fast_lane_log() {  # <state>
+  printf '%s\n' "${FM_FAST_LANE_RING_LOG:-${FM_RING_LOG:-$1/.fast-lane-ring.log}}"
+}
+
+# fm_procevent_ring_primary <state> <adapter> <source-id> <sequence> <result-path> <reason-line>
+# Ring the running session directly on the fast lane when a listener-backed
+# event arrives, after durable capture. Write, then ring: the event is already
+# stored in procevent-inbox/ and queued in state/.wake-queue before this runs.
+# Marks the surfaced marker so the slow-lane watcher cycle is not interrupted.
+fm_procevent_ring_primary() {
+  local state=$1 adapter=$2 id=$3 seq=$4 result=$5 reason=$6
+  local ring_log ring_dir marker tmp json_tmp json_target epoch
+  epoch=$(date +%s)
+  ring_log=$(fm_procevent_fast_lane_log "$state")
+  mkdir -p "${ring_log%/*}" 2>/dev/null || true
+  printf '%s\tring\tfast-lane\t%s\t%s\t%s\t%s\n' "$epoch" "$adapter" "$id" "$seq" "$reason" >> "$ring_log"
+  if [ -n "${FM_SEND_LOG:-}" ] && [ "$FM_SEND_LOG" != "$ring_log" ]; then
+    printf '%s\tring\tfast-lane\t%s\t%s\t%s\t%s\n' "$epoch" "$adapter" "$id" "$seq" "$reason" >> "$FM_SEND_LOG" 2>/dev/null || true
+  fi
+
+  # Stamp the surfaced marker immediately so the slow-lane watcher does not exit its cycle.
+  marker=$(fm_procevent_surfaced_marker "$state" "procevent:$id:$seq")
+  tmp=$(umask 077; mktemp "$state/.seen-procevent.XXXXXX" 2>/dev/null || true)
+  if [ -n "$tmp" ]; then
+    mv -f -- "$tmp" "$marker" 2>/dev/null || rm -f -- "$tmp"
+  fi
+
+  # Fast-lane signal to Pi primary watch extension if directory is active or present.
+  ring_dir=$(fm_procevent_fast_lane_ring_dir "$state")
+  if [ -d "$ring_dir" ] || [ -d "${ring_dir%/*}" ]; then
+    mkdir -p "$ring_dir" 2>/dev/null || true
+    json_tmp=$(umask 077; mktemp "$ring_dir/.ring.XXXXXX" 2>/dev/null || true)
+    if [ -n "$json_tmp" ]; then
+      printf '{"version":1,"id":"%s","seq":%s,"adapter":"%s","result":"%s","reason":"%s"}\n' \
+        "$id" "$seq" "$adapter" "$result" "$reason" > "$json_tmp" 2>/dev/null || true
+      json_target="$ring_dir/$id.$seq.ring.json"
+      mv -f -- "$json_tmp" "$json_target" 2>/dev/null || rm -f -- "$json_tmp"
+    fi
+  fi
+
+  # Optional harness or test ring command.
+  if [ -n "${FM_FAST_LANE_RING_COMMAND:-}" ]; then
+    "$FM_FAST_LANE_RING_COMMAND" "$state" "$adapter" "$id" "$seq" "$result" "$reason" 2>/dev/null || true
+  fi
+
+  # Primary supervisor pane doorbell (tmux or herdr backend).
+  if [ -n "${FM_SUPERVISOR_BACKEND:-}" ] && [ -n "${FM_SUPERVISOR_TARGET:-}" ]; then
+    case "$FM_SUPERVISOR_BACKEND" in
+      tmux)
+        tmux send-keys -t "$FM_SUPERVISOR_TARGET" -l "FIRSTMATE FAST-LANE WAKE: $reason" 2>/dev/null || true
+        tmux send-keys -t "$FM_SUPERVISOR_TARGET" Enter 2>/dev/null || true
+        ;;
+    esac
+  fi
+  return 0
+}
