@@ -511,10 +511,20 @@ case "${1:-}" in
   list-windows)
     if [ -n "${FM_FAKE_TMUX_WINDOWS:-}" ]; then
       printf '%s\n' "$FM_FAKE_TMUX_WINDOWS"
+    elif [ -s "$FM_FAKE_AGY_STATE.window" ]; then
+      cat "$FM_FAKE_AGY_STATE.window"
     fi
-    exit 0
-    ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+    exit 0 ;;
+  new-window)
+    name=
+    previous=
+    for arg in "$@"; do
+      [ "$previous" = -n ] && name=$arg
+      previous=$arg
+    done
+    printf '%s\n' "$name" > "$FM_FAKE_AGY_STATE.window"
+    exit 0 ;;
+  has-session|new-session|kill-window) exit 0 ;;
   send-keys)
     literal=
     prev=

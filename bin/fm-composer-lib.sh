@@ -255,6 +255,13 @@ fm_composer_normalize_trim_var() {  # <varname>
 # the tightest margin over the 128 default in the fleet. Above ~150 that glyph is
 # stripped as ghost text, which is why the bare-glyph fallback below must also
 # recognise every agent glyph from the UNSTRIPPED plain row.
+# Command Code draws its idle placeholder in truecolor 38;2;138;148;168,
+# luminance ~147.3, while its typed text is the default foreground (verified
+# live, Command Code 1.74.1 with COLORTERM=truecolor, which its launch pins; a
+# 256-colour terminal gets the untested 38;5;145 instead). Raising the fleet-wide
+# ceiling to reach it would over-strip other harnesses, so only a screen that the
+# backend's identity probe attributes to Command Code is read with a fixed
+# ceiling of 160 in its place (fm_composer_classify_screen).
 # The dim/faint and dark-foreground states are tracked together as "de-emphasis";
 # codes are processed left to right within a sequence, so "ESC[0;2m" reads as dim.
 # LC_ALL=C makes awk walk bytes, so multibyte glyphs (e.g. ❯) and de-emphasised
@@ -353,6 +360,7 @@ fm_composer_strip_ghost() {
 # Delivery-only rendered busy footers per harness. claude/codex: "esc to
 # interrupt"; opencode: "esc interrupt"; pi: "Working..."; omp: "Working…"; grok: "Ctrl+c:cancel"; agy: "esc to cancel";
 # devin: "esc twice to interrupt" and its "❭ Guide Devin while it works" working composer.
+# commandcode: "esc to interrupt" beside a bullet-framed elapsed cell.
 # Claude's current spinner has a rotating glyph and word, but every active-turn
 # line has an ellipsis followed by a parenthesized elapsed duration. Keep this
 # signature separate from the shared default because that shape is not generic
@@ -382,6 +390,12 @@ FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[
 # Devin 3000.11.1: the working composer and interrupt hint are independent
 # delivery signals. Neither is used as semantic worker-state evidence.
 FM_DELIVERY_DEVIN_BUSY_REGEX_DEFAULT='esc twice to interrupt|^[[:space:]]*❭ Guide Devin while it works$'
+# Command Code 1.74.1 renders one status row while a turn runs, for example
+# ` ○ Contemplificating…  esc to interrupt • 2s • ↓ 41`: the `esc to interrupt`
+# token and the bullet-framed elapsed cell are independent delivery signals, and
+# the idle footer carries neither. Delivery guard only; recorded worker state
+# comes from the commandcode-mod writer in bin/fm-busy-lib.sh.
+FM_DELIVERY_COMMANDCODE_BUSY_REGEX_DEFAULT='esc to interrupt|•[[:space:]]+[0-9]+[smh]([[:space:]]+[0-9]+[smh])*[[:space:]]+•'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
 FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
@@ -419,6 +433,17 @@ FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
 # acknowledgement. Delivery guard only; recorded worker state comes from the
 # agy-regex fold in bin/fm-busy-lib.sh.
 FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT='esc[[:space:]]+to[[:space:]]+cancel'
+# polytoken renders a live elapsed row above its composer separators while a
+# turn runs - ` Running for 11.12s`, with a leading space and an unanchored
+# tail of border furniture (verified live, 0.8.19; the turn-end rows are
+# `Completed in <t>`, `Errored after <t>`, and `Canceled after <t>`, all
+# deliberately distinct from the busy token). Delivery guard only; recorded
+# worker state comes from the polytoken-hook fold in bin/fm-busy-lib.sh, and
+# echoed worker output naming the token can fake only this acknowledgement,
+# never a busy-state verdict.
+# It is deliberately not part of the harness-less union above, so a pane with
+# no recorded harness never reads it as busy.
+FM_DELIVERY_POLYTOKEN_BUSY_REGEX_DEFAULT='^[[:space:]]*Running for [0-9]+([.][0-9]+)?s'
 FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
 
 fm_busy_lines_match() {  # [harness]
@@ -430,12 +455,14 @@ fm_busy_lines_match() {  # [harness]
     case "$harness" in
       claude) regex=$FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT ;;
       devin) regex=$FM_DELIVERY_DEVIN_BUSY_REGEX_DEFAULT ;;
+      commandcode) regex=$FM_DELIVERY_COMMANDCODE_BUSY_REGEX_DEFAULT ;;
       codex) regex=$FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT ;;
       opencode) regex=$FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT ;;
       pi|pi-signed) regex=$FM_DELIVERY_PI_BUSY_REGEX_DEFAULT ;;
       omp) regex=$FM_DELIVERY_OMP_BUSY_REGEX_DEFAULT ;;
       grok) regex=$FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT ;;
       agy) regex=$FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT ;;
+      polytoken) regex=$FM_DELIVERY_POLYTOKEN_BUSY_REGEX_DEFAULT ;;
       kimi) regex=$FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT ;;
       cursor) regex=$FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT ;;
       '') regex=$FM_DELIVERY_BUSY_REGEX_DEFAULT ;;
@@ -467,13 +494,24 @@ FM_COMPOSER_SHELL_PROMPT_GLYPHS=$(printf '%s\n' '>' '$' '%' '#')
 # `Add a follow-up` once a turn has completed (verified live on cursor-agent
 # 2026.08.11-e8db854). Devin renders the anchored `Ask Devin to build features,
 # fix bugs, or work on your code` as dim text after its `❭` glyph (verified
-# live, devin 3000.11.1). FM_COMPOSER_IDLE_RE overrides for an unverified harness;
+# live, devin 3000.11.1). Command Code renders the anchored `Ask your question...`
+# after its `❯` glyph (verified live, Command Code 1.74.1); its truecolor is too
+# bright for the default ghost ceiling, so fm_composer_classify_screen reads its
+# screen with a raised one. FM_COMPOSER_IDLE_RE overrides for an unverified harness;
 # matching is case-insensitive.
-FM_COMPOSER_IDLE_RE_DEFAULT='^Type a message\.\.\.$|^Ask anything(\.\.\.|…)|^Plan, search, build anything$|^Add a follow-up$|^Ask Devin to build features, fix bugs, or work on your code$'
+FM_COMPOSER_IDLE_RE_DEFAULT='^Type a message\.\.\.$|^Ask anything(\.\.\.|…)|^Plan, search, build anything$|^Add a follow-up$|^Ask Devin to build features, fix bugs, or work on your code$|^Ask your question\.\.\.$'
 
 # Opencode draws a mode/model footer line INSIDE its left-bar composer
 # ("Build · GPT-5.5 Fast OpenAI · high"). It is composer furniture, not typed
 # text, and only the run's LAST row is ever matched against it.
+# The pattern stays deliberately narrow: the space after the separator is
+# required (`[[:space:]]+`, never `[[:space:]]*`), and it admits no mode word
+# beyond opencode's own Build/Plan pair, because this exemption is the one
+# path that can turn a row holding typed text into `empty`, and `empty` is the
+# verdict that authorizes typing into a live session. Widening it to admit a
+# colour that ghost stripping currently reaches (for example a differently
+# dimmed mode cell) belongs with a fresh live capture in
+# docs/verification/runtime-backends.md, not with a regex edit.
 FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT='^(Build|Plan)[[:space:]]+·[[:space:]]+'
 # Claude draws its permission-mode hint on its own row directly below the
 # composer (` ⏵⏵ bypass permissions on (shift+tab to cycle)`, ` ⏵⏵ accept edits
@@ -742,8 +780,9 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 # identity result was supplied, and the verdict depends on it. Adapters answer
 # `need-identity` by running their identity probe once and re-calling with
 # either its result or `probe-absent`; the sentinel never escapes an adapter.
-# Identity stays a lazy second pass so the common non-pi read never pays for
-# the probe.
+# Identity stays a lazy second pass: an adapter probes only on `need-identity`
+# or, on tmux, to recheck an `unknown` read for Command Code, so a definite
+# non-pi read never pays for the probe.
 #
 # Consumers that can overwrite input or confirm delivery must accept only the
 # exact positive proof they require (`empty`), so unrecognized future verdicts
@@ -1391,9 +1430,7 @@ _fm_composer_leftbar_cwd_start() {  # <screen> <first-row> <last-row>
   # loop applies); the furniture run ends on the row above it, and a last row
   # that is not the footer leaves the region without such furniture.
   raw=$(_fm_composer_screen_row "$last" "$plain")
-  rest=$(_fm_composer_row_content "$raw" 0)
-  case "$rest" in '┃'*) rest=${rest#┃} ;; *) rest= ;; esac
-  fm_composer_normalize_trim_var rest
+  rest=$(_fm_composer_leftbar_plain_content "$raw")
   fm_composer_idle_matches "$rest" "$footer_re" sensitive || return 1
   # The region's width: the widest trimmed plain row across first..last. The
   # furniture is right-aligned and the widest rows reach the pane's right
@@ -1460,6 +1497,53 @@ _fm_composer_leftbar_cwd_start() {  # <screen> <first-row> <last-row>
 # immediately above that footer, recognised by
 # _fm_composer_leftbar_cwd_start) is composer furniture too. Real content is
 # pending when styling can prove it real, unknown otherwise.
+# _fm_composer_row_is_leftbar_footer: 0 when the run's LAST row is opencode's
+# own mode/model/branch line (FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT above)
+# rather than typed text. Proved from BOTH forms of that row - the ghost-
+# stripped content and the ANSI-stripped plain row - because opencode draws
+# the footer's identifying cells DE-EMPHASISED: verified live on opencode
+# 1.19.0, which renders the mode word at RGB 67;133;190 and the middle-dot
+# separators at 111;110;105, luminances 119.8 and 109.7 against the 128
+# ghost threshold. fm_composer_strip_ghost exists to answer "what did the human
+# type?", so it deleted exactly the cells that identify the footer, the
+# column-zero anchor became unreachable on every styled backend (tmux, Herdr,
+# Zellij - which is all of them, since the unstyled row keeps its styling
+# bytes), and a real idle composer read `pending`: the verdict that refuses
+# every send, restart, and shutdown and skips every steer doorbell. Proving the
+# furniture on the row ghost stripping cannot reach is the fix. What makes that
+# safe is what the plain form can and cannot newly reach: a row is exempted by
+# the plain form only when the ghost-stripped row still fails the pattern,
+# which means the stripped content is non-empty while its own leading
+# `Build`/`Plan` cell was deleted as ghost. Nothing opencode draws
+# de-emphasises a typed row's own leading cells - only its furniture is drawn
+# dimmed - so the only rows the plain form admits beyond the stripped one are
+# de-emphasised furniture, and the mode footer is the only furniture opencode
+# draws that opens with a mode word. That makes the exemption self-confirming
+# rather than asserted, and it is the argument to recheck when a new opencode
+# release moves a colour.
+_fm_composer_row_is_leftbar_footer() {  # <stripped-content> <plain-content> <footer-re>
+  fm_composer_idle_matches "$1" "$3" sensitive && return 0
+  fm_composer_idle_matches "$2" "$3" sensitive
+}
+
+# _fm_composer_leftbar_plain_content: the left-bar content cell's second form,
+# normalized exactly like the ghost-stripped cell it is paired with, and the
+# ONE definition of that form: the classifier, the extractor, and the
+# cwd/branch recogniser all prove the footer from it, so they cannot drift.
+# Only the LAST row of a run can exempt anything (see
+# _fm_composer_row_is_leftbar_footer), so every call site takes it from here
+# inside its last-row branch rather than paying a second capture and sed on
+# every row of every composer read.
+_fm_composer_leftbar_plain_content() {  # <raw-row> -> plain content on stdout
+  local plain
+  plain=$(_fm_composer_row_content "$1" 0)
+  case "$plain" in
+    '┃'*) plain=${plain#┃} ;;
+  esac
+  fm_composer_normalize_trim_var plain
+  printf '%s' "$plain"
+}
+
 _fm_composer_classify_leftbar() {  # <screen> <styled> <first-row> <last-row>
   local screen=$1 styled=$2 first=$3 last=$4
   local row raw content pending_seen=0 footer_re leading_blank=1 placeholder_position=0 cwd_start
@@ -1488,7 +1572,8 @@ _fm_composer_classify_leftbar() {  # <screen> <styled> <first-row> <last-row>
       row=$((row + 1)); continue
     fi
     if [ "$row" -eq "$last" ] \
-       && fm_composer_idle_matches "$content" "$footer_re" sensitive; then
+       && _fm_composer_row_is_leftbar_footer "$content" \
+              "$(_fm_composer_leftbar_plain_content "$raw")" "$footer_re"; then
       row=$((row + 1)); continue
     fi
     pending_seen=1
@@ -1811,7 +1896,8 @@ EOF
             && fm_composer_idle_matches "$content" "${FM_COMPOSER_IDLE_RE:-$FM_COMPOSER_IDLE_RE_DEFAULT}" insensitive; } \
        || { [ "$FM_COMPOSER_SELECTED_KIND" = leftbar ] \
             && [ "$row" -eq "$FM_COMPOSER_SELECTED_LAST" ] \
-            && fm_composer_idle_matches "$content" "$footer_re" sensitive; }; then
+            && _fm_composer_row_is_leftbar_footer "$content" \
+                   "$(_fm_composer_leftbar_plain_content "$raw")" "$footer_re"; }; then
       row=$((row + 1))
       continue
     fi
@@ -1912,6 +1998,16 @@ fm_composer_classify_screen() {  # <caps> <screen> [cursor_row] [identity]
   done <<EOF
 $caps
 EOF
+  # A Command Code identity (`commandcode` from the tmux probe, `cmd` from
+  # Herdr's native agent detection) reads this one screen with Command Code's
+  # placeholder ceiling; see fm_composer_strip_ghost.
+  if [ "$has_identity" = 1 ]; then
+    case "${identity%%$'\t'*}" in
+      commandcode|cmd)
+        local FM_COMPOSER_GHOST_LUMA_MAX=160
+        ;;
+    esac
+  fi
   [ "$cursor" = 1 ] || cy=''
   if [ -n "$cy" ]; then
     case "$cy" in *[!0-9]*) printf 'unknown'; return 0 ;; esac
@@ -2122,7 +2218,15 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
   fi
   agent=${identity%%$'\t'*}
   agent_status=${identity#*$'\t'}
-  if [ "$agent" != pi ] || [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ]; then
+  # polytoken is the second verified owner of the separated shape (verified
+  # live, 0.8.19: a full-width separator pair over one blank or pending
+  # content row with a footer below), so its identity passes the same
+  # conjunction: an idle polytoken proves an empty composer, and a working
+  # polytoken keeps the strict unknown - its composer really is empty
+  # mid-turn (Enter queues, verified live), but the unknown keeps the
+  # busy-queue conversion honest through the submit cores.
+  if { [ "$agent" != pi ] && [ "$agent" != polytoken ]; } \
+    || [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ]; then
     printf 'unknown'
     return 0
   fi
