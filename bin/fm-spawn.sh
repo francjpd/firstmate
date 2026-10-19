@@ -3777,9 +3777,15 @@ freshen_spawn_worktree_base() { # <worktree> [<base-branch>]
     }
   fi
   target="origin/$default"
-  if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
-    echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
+  if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" 2>/dev/null; then
+    if git -C "$worktree" remote | grep -q '^fork$' && git -C "$worktree" fetch --quiet fork "+refs/heads/$default:refs/remotes/fork/$default" 2>/dev/null; then
+      target="fork/$default"
+    elif git -C "$worktree" rev-parse --verify --quiet "refs/heads/$default^{commit}" >/dev/null 2>&1; then
+      target="refs/heads/$default"
+    else
+      echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
   fi
   expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
     echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
