@@ -304,6 +304,23 @@ test_pi_snippet_uses_effective_extension_path() {
   pass "pi supervision snippet renders the effective extension path"
 }
 
+test_agy_supervision_protocol() {
+  local out ordinary repair
+  for h in agy agy2; do
+    out=$("$RENDER" --harness "$h")
+    assert_contains "$out" "primary harness: $h" "$h supervision heading missing"
+    assert_contains "$out" "Mode: agy / agy2 Stop-hook-owned turn-end signalling." "$h mode missing"
+    assert_contains "$out" ".agents/hooks.json" "$h hook path missing"
+    ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
+    assert_contains "$ordinary" "Stop hook in .agents/hooks.json owns turn-end signalling" \
+      "$h ordinary wake line missing Stop hook reference"
+    repair=$("$RENDER" --harness "$h" --repair-line)
+    assert_contains "$repair" "Stop-hook turn-end signalling" \
+      "$h repair line missing Stop-hook reference"
+  done
+  pass "agy and agy2 render the Stop-hook turn-end signalling supervision protocol"
+}
+
 test_supervision_host_protocol_on_a_claude_home_unless_off
 test_supervision_host_protocol_on_every_arm_owner
 test_selected_harness_block_only
@@ -316,3 +333,4 @@ test_pi_signed_preserves_identity_with_pi_supervision_protocol
 test_grok_is_background_notify
 test_grok_command_sources_effective_config
 test_pi_snippet_uses_effective_extension_path
+test_agy_supervision_protocol

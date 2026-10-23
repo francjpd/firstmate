@@ -1,4 +1,4 @@
-# Verification: the agy2 (second Antigravity identity) crewmate/scout adapter
+# Verification: the agy2 (second Antigravity identity) adapter
 
 Active empirical facts for firstmate's `agy2` adapter, the same Antigravity CLI running as a second Antigravity account on one Unix user.
 The skill tree rooted at [`.agents/skills/harness-adapters/SKILL.md`](../../.agents/skills/harness-adapters/SKILL.md) owns the operating facts through [`references/harness/agy2.md`](../../.agents/skills/harness-adapters/references/harness/agy2.md); this record owns how they were established and what is still unproven.
@@ -127,7 +127,16 @@ That is the mechanism proven under concurrency: the only missing input is a real
 
 ## Spawn path, end to end
 
-`tests/fm-agy2-harness.test.sh` drives the real `bin/fm-spawn.sh` with a fake tmux endpoint and a fake `agy2` script, and pins all of it: the resolved launcher path, `--prompt-interactive` with `--model` and `--effort`, `--dangerously-skip-permissions`, `harness=agy2` in task metadata, the trust entry landing in `<agy2-root>/gemini/antigravity-cli/settings.json` and NOT in the fleet's `~/.gemini` store, the refusal when the launcher reports no stored identity (with no CLI launched at all), and the secondmate refusal.
+`tests/fm-agy2-harness.test.sh` drives the real `bin/fm-spawn.sh` with a fake tmux endpoint and a fake `agy2` script, and pins all of it: the resolved launcher path, `--prompt-interactive` with `--model` and `--effort`, `--dangerously-skip-permissions`, `harness=agy2` in task metadata, the trust entry landing in `<agy2-root>/gemini/antigravity-cli/settings.json` and NOT in the fleet's `~/.gemini` store, the refusal when the launcher reports no stored identity (with no CLI launched at all), and secondmate conformance.
+
+## Supervision channel and secondmate eligibility
+
+Secondmate eligibility is lifted for `agy2` in `bin/fm-control-lib.sh` and `bin/fm-spawn.sh`.
+Turn-end signalling is proven through the `Stop` lifecycle hook in `.agents/hooks.json` under the customization root ($WT/.agents).
+When the execution loop finishes, the hook executes `bin/fm-busy-event.sh apply <state> <id> idle --gen <gen> --source agy-hook --event stop` with cwd set to `.agents/`, outputting `{}`.
+Classification via `fm_busy_classify` reports `idle agy-hook` on success, while panes running without the hook fall through to rendered-tail inspection and report `unknown agy-regex`.
+Workspace trust pre-registration for a secondmate home is handled by `bin/fm-agy-trust.sh --secondmate-home <home> <id> --gemini-dir <root>`, writing trust to the agy2 store and leaving the captain's fleet config untouched.
+Teardown in `bin/fm-teardown.sh` removes the `firstmate` block from `.agents/hooks.json`, unlinks the file if empty, and removes empty `.agents/` directories without touching tracked project content.
 
 ## Still unproven
 

@@ -1377,19 +1377,52 @@ meta_value() {
   fm_meta_get "$meta" "$key"
 }
 
-# Remove only Polytoken's firstmate-generated worktree wiring, as named by
-# fm_control_harness_wiring_paths. Its tracked hook and facet layers belong to
-# the project. Other harnesses retain their existing worktree-return cleanup.
+teardown_remove_agy_hook() {  # <worktree>
+  local wt=$1 hook_file="$1/.agents/hooks.json"
+  [ -f "$hook_file" ] || return 0
+  node -e '
+    const fs = require("node:fs");
+    const file = process.argv[1];
+    try {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (data && typeof data === "object") {
+        delete data.firstmate;
+        if (Object.keys(data).length === 0) {
+          fs.unlinkSync(file);
+        } else {
+          fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+        }
+      }
+    } catch (e) {
+      try { fs.unlinkSync(file); } catch (_) {}
+    }
+  ' "$hook_file" 2>/dev/null || rm -f "$hook_file"
+  if [ ! -e "$hook_file" ] && git -C "$wt" ls-files --error-unmatch -- .agents/hooks.json >/dev/null 2>&1; then
+    git -C "$wt" checkout -- .agents/hooks.json >/dev/null 2>&1 || true
+  fi
+  rmdir "$wt/.agents" 2>/dev/null || true
+}
+
+# Remove generated harness worktree wiring, as named by fm_control_harness_wiring_paths.
+# Tracked hook and facet layers belong to the project. Other harnesses retain their
+# existing worktree-return cleanup.
 remove_harness_worktree_wiring() {  # <worktree>
-  local wt=$1 path
-  [ "$(meta_value "$META" harness)" = polytoken ] || return 0
-  while IFS= read -r path; do
-    case "$path" in "$wt"/*) ;; *) continue ;; esac
-    git -C "$wt" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 && continue
-    rm -f "$path"
-  done <<EOF
-$(fm_control_harness_wiring_paths "$(meta_value "$META" harness)" "$wt" "$STATE" "$ID")
+  local wt=$1 path harness
+  harness=$(meta_value "$META" harness)
+  case "$harness" in
+    polytoken)
+      while IFS= read -r path; do
+        case "$path" in "$wt"/*) ;; *) continue ;; esac
+        git -C "$wt" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 && continue
+        rm -f "$path"
+      done <<EOF
+$(fm_control_harness_wiring_paths "$harness" "$wt" "$STATE" "$ID")
 EOF
+      ;;
+    agy | agy2)
+      teardown_remove_agy_hook "$wt"
+      ;;
+  esac
 }
 
 require_orca_worktree_id() {
@@ -3331,6 +3364,7 @@ cleanup_firstmate_home_children() {
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
           "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
+        teardown_remove_agy_hook "$child_wt"
       fi
       fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
     elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
@@ -3351,6 +3385,7 @@ cleanup_firstmate_home_children() {
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
           "$child_wt/.opencode/plugins/fm-busy-state.js" \
           "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
+        teardown_remove_agy_hook "$child_wt"
         if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
           teardown_scrub_scratch_copy "$child_wt" || return 1
           child_pool_slot=0

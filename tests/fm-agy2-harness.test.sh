@@ -169,8 +169,10 @@ test_control_plane_folds_agy2_onto_agy() {
   assert_equals 1 "$(fm_control_interrupt_repeat "$family")" "agy2 must interrupt once like agy"
   assert_equals /quit "$(fm_control_exit_command "$family")" "agy2 must exit like agy"
   assert_equals key "$(fm_control_interrupt_transport "$family")" "agy2 must interrupt through the keyplane"
-  if fm_control_harness_supports_kind agy2 secondmate; then
-    fail "agy2 must never run a secondmate"
+  fm_control_harness_supports_kind agy2 secondmate ||
+    fail "agy2 must support secondmate"
+  if fm_control_harness_supports_kind agy secondmate; then
+    fail "agy must never run a secondmate"
   fi
   pass "fm-control-lib: agy2 rides the agy control tables"
 }
@@ -496,6 +498,55 @@ test_spawn_uses_the_agy2_launcher_and_its_own_trust_store() {
   pass "fm-spawn: agy2 launches through its launcher and trusts in agy2's own store"
 }
 
+make_agy2_secondmate_case() {  # <name> <id>
+  local name=$1 id=$2 case_dir home subhome fakebin
+  case_dir="$TMP_ROOT/spawn-$name"
+  home="$case_dir/home"
+  subhome="$case_dir/subhome"
+  fakebin=$(make_agy2_fakebin "$case_dir/fake")
+  mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
+  cat > "$home/data/$id/brief.md" <<'EOF'
+# Task
+## Captain's intent
+Exercise the agy2 secondmate supervision channel.
+
+## Firstmate spec
+Verify turn-end signalling, steering delivery, and lifecycle keys.
+EOF
+  # Setup secondmate home
+  mkdir -p "$subhome/bin" "$subhome/data" "$subhome/state" "$subhome/config" "$subhome/projects"
+  printf '%s\n' "$id" > "$subhome/.fm-secondmate-home"
+  printf '# Firstmate\n' > "$subhome/AGENTS.md"
+  printf 'charter\n' > "$subhome/data/charter.md"
+  cat > "$subhome/bin/fm-guard.sh" <<'SH'
+#!/bin/sh
+exit 0
+SH
+  chmod +x "$subhome/bin/fm-guard.sh"
+  cat > "$subhome/bin/fm-session-start.sh" <<'SH'
+#!/bin/sh
+exit 0
+SH
+  chmod +x "$subhome/bin/fm-session-start.sh"
+
+  git -C "$subhome" init -q
+  git -C "$subhome" config user.name "Firstmate Tests"
+  git -C "$subhome" config user.email "tests@example.invalid"
+  git -C "$subhome" add AGENTS.md bin/
+  git -C "$subhome" commit -qm initial
+
+  # Register in primary home
+  printf -- '- %s - conformance (home: %s; scope: conformance; projects: alpha; added 2026-10-23)\n' \
+    "$id" "$subhome" > "$home/data/secondmates.md"
+
+  mkdir -p "$case_dir/agy2-root/gemini/antigravity-cli"
+  printf '%s\n' '{"trustedWorkspaces":["/home/someone/elsewhere"]}' \
+    > "$case_dir/agy2-root/gemini/antigravity-cli/settings.json"
+  touch "$home/state/.last-watcher-beat"
+  : > "$case_dir/launch.log"
+  printf '%s|%s|%s|%s\n' "$case_dir" "$home" "$subhome" "$fakebin"
+}
+
 test_spawn_refuses_agy2_without_a_second_identity() {
   local id rec out rc
   id="agy2-nocred-$$"
@@ -510,23 +561,101 @@ test_spawn_refuses_agy2_without_a_second_identity() {
   pass "fm-spawn: an agy2 spawn with no stored identity is refused before any launch"
 }
 
-test_spawn_refuses_agy2_as_a_secondmate() {
-  local id rec out rc
-  id="agy2-mate-$$"
-  rec=$(make_agy2_spawn_case mate "$id")
-  case_dir=${rec%%|*}
-  home="$case_dir/home"
-  out=$(HOME="$home" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
-    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
-    PATH="$case_dir/fake:$BASE_PATH" "$SPAWN" "$id" --secondmate agy2 2>&1)
+test_agy2_secondmate_conformance() {
+  local id rec case_dir home subhome fakebin out rc
+  local meta hook_file hook_cmd hook_out busypath verdict family
+  id="agy2-conformance-$$"
+  rec=$(make_agy2_secondmate_case conformance "$id")
+  IFS='|' read -r case_dir home subhome fakebin <<EOF
+$rec
+EOF
+
+  out=$(HOME="$home" FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$subhome" TMUX="fake,1,0" \
+    FM_FAKE_AGY2_ROOT="$case_dir/agy2-root" \
+    FM_FAKE_AGY2_LAUNCH_LOG="$case_dir/launch.log" \
+    FM_FAKE_AGY2_READY="${FM_FAKE_AGY2_READY:-1}" \
+    FM_FAKE_LAUNCH_LOG="$case_dir/agy-launch.log" \
+    FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
+    FM_FAKE_AGY_STATE="$case_dir/agy.state" \
+    FM_FAKE_AGY_SETTINGS="$case_dir/agy2-root/gemini/antigravity-cli/settings.json" \
+    FM_FAKE_AGY_ASSUME_TRUSTED=0 \
+    FM_AGY_READY_POLLS=4 FM_AGY_POLL_INTERVAL=0 \
+    PATH="$fakebin:$BASE_PATH" \
+    "$SPAWN" "$id" "$subhome" --secondmate --harness agy2 2>&1)
   rc=$?
-  [ "$rc" -ne 0 ] || fail "agy2 must be refused as a secondmate"
-  assert_contains "$out" "crewmate/scout adapter only" "the secondmate refusal must be explicit"
-  pass "fm-spawn: agy2 cannot launch a secondmate"
+  expect_code 0 "$rc" "agy2 secondmate spawn should succeed: $out"
+
+  # 1. Verify task metadata and trust pre-registration
+  meta="$home/state/$id.meta"
+  assert_grep 'harness=agy2' "$meta" "secondmate meta must record harness=agy2"
+  assert_grep 'kind=secondmate' "$meta" "secondmate meta must record kind=secondmate"
+  assert_grep "home=$subhome" "$meta" "secondmate meta must record home path"
+  assert_grep "\"$subhome\"" "$case_dir/agy2-root/gemini/antigravity-cli/settings.json" \
+    "secondmate home trust must land in agy2's own settings store"
+  [ ! -e "$home/.gemini/antigravity-cli/settings.json" ] \
+    || fail "secondmate trust pre-registration touched the fleet store"
+
+  # 2. Verify busy wiring and Stop hook installation
+  [ -e "$home/state/$id.busy-gen" ] || fail "busy-gen sidecar must be armed"
+  busypath="$home/state/$id.busy-state"
+  [ -e "$busypath" ] || fail "busy-state record must exist"
+  hook_file="$subhome/.agents/hooks.json"
+  [ -f "$hook_file" ] || fail "Stop hook was not installed into secondmate home"
+  hook_cmd=$(node -e 'const j=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));console.log(j.firstmate.Stop[0].command);' "$hook_file")
+  assert_contains "$hook_cmd" "fm-busy-event.sh" "hook command must invoke fm-busy-event.sh"
+  assert_contains "$hook_cmd" "idle" "hook command must apply idle state"
+  assert_contains "$hook_cmd" "--source agy-hook" "hook command must specify agy-hook source"
+  assert_contains "$hook_cmd" "--event stop" "hook command must specify stop event"
+
+  # 3. Verify turn-end signalling via Stop hook execution
+  hook_out=$(sh -c "cd '$subhome/.agents' && $hook_cmd")
+  assert_equals '{}' "$hook_out" "Stop hook command must output JSON {}"
+  assert_contains "$(cat "$busypath")" "state=idle" "busy-state must transition to idle"
+  assert_contains "$(cat "$busypath")" "source=agy-hook" "busy-state must record agy-hook source"
+  verdict=$(fm_busy_classify tmux fake agy2 "$id" "$home/state" '')
+  assert_equals "idle agy-hook" "$verdict" "classification must report honest idle agy-hook"
+
+  # 4. Verify honest fallback classification (never invent idle)
+  verdict=$(fm_busy_classify tmux fake agy2 "$id-other" "$home/state" '  esc to cancel')
+  assert_equals "busy agy-regex" "$verdict" "fallback must report busy on pinned row"
+  verdict=$(fm_busy_classify tmux fake agy2 "$id-other" "$home/state" 'other text')
+  assert_equals "unknown agy-regex" "$verdict" "fallback must report unknown without marker, never idle"
+
+  # 5. Verify lifecycle keys
+  family=$(fm_control_harness_family agy2)
+  assert_equals Escape "$(fm_control_interrupt_key "$family")" "interrupt key must be Escape"
+  assert_equals /quit "$(fm_control_exit_command "$family")" "exit command must be /quit"
+  assert_equals 1 "$(fm_control_interrupt_repeat "$family")" "interrupt repeat must be 1"
+  assert_equals key "$(fm_control_interrupt_transport "$family")" "interrupt transport must be key"
+
+  # 6. Verify steering delivery
+  assert_contains "$(cat "$case_dir/agy-launch.log")" "$id.inbox" "launch command exports FM_TASK_INBOX"
+  assert_contains "$(cat "$case_dir/agy-launch.log")" "FM_HOME='$subhome'" "launch command exports secondmate FM_HOME"
+  assert_grep 'window=' "$meta" "secondmate has a recorded window"
+
+  # 7. Verify hook teardown cleanly removes what spawn added
+  node -e '
+    const fs = require("node:fs");
+    const file = process.argv[1];
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    delete data.firstmate;
+    if (Object.keys(data).length === 0) fs.unlinkSync(file);
+    else fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+  ' "$hook_file"
+  rmdir "$subhome/.agents" 2>/dev/null || true
+  [ ! -e "$hook_file" ] || fail "hooks.json should be removed when empty"
+  [ ! -d "$subhome/.agents" ] || fail ".agents dir should be removed when empty"
+  [ -f "$subhome/AGENTS.md" ] || fail "AGENTS.md should remain intact"
+  [ -f "$subhome/data/charter.md" ] || fail "charter.md should remain intact"
+
+  pass "fm-spawn: agy2 secondmate conformance passed (hook turn-end, classification, lifecycle, steering, trust)"
 }
 
 test_spawn_uses_the_agy2_launcher_and_its_own_trust_store
 test_spawn_refuses_agy2_without_a_second_identity
-test_spawn_refuses_agy2_as_a_secondmate
+test_agy2_secondmate_conformance
 
 echo "fm-agy2-harness.test.sh: all cases passed"

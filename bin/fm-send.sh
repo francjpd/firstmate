@@ -1129,7 +1129,7 @@ else
   # explicit FM_SEND_RETRIES still wins, and every other harness keeps the
   # shared 3-retry default untouched.
   case "$TARGET_HARNESS" in
-    agy) retries=${FM_SEND_RETRIES:-20} ;;
+    agy|agy2) retries=${FM_SEND_RETRIES:-20} ;;
     *) retries=${FM_SEND_RETRIES:-3} ;;
   esac
   sleep_s=${FM_SEND_SLEEP:-0.4}

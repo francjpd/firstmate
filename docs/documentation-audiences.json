@@ -161,6 +161,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/grill-me/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/harness-adapters/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -349,6 +353,14 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/deck-axi-specification.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/deck-component-patterns.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/documentation-audiences.md",
       "audience": "maintainer-architecture"
     },
@@ -398,6 +410,10 @@
     },
     {
       "path": "docs/gerrit-forge-integration.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/grill-lavish-integration.md",
       "audience": "maintainer-architecture"
     },
     {
@@ -451,6 +467,10 @@
     {
       "path": "docs/subagent-guard.md",
       "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/supervision-protocols/agy.md",
+      "audience": "agent-runtime"
     },
     {
       "path": "docs/supervision-protocols/claude.md",

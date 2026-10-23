@@ -122,7 +122,7 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-    muse|gemini|rovo|agy|agy2|devin|commandcode|polytoken) [ "$kind" != secondmate ] || return 1 ;;
+    muse|gemini|rovo|agy|devin|commandcode|polytoken) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }
@@ -551,6 +551,11 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id> [ki
       printf '%s\n' "$state/$id.muse-session-current"
       ;;
     cursor) printf '%s\n' "$state/$id.cursor-session" ;;
+    agy|agy2)
+      if grep -qsF "/bin/fm-busy-event.sh" "$wt/.agents/hooks.json" 2>/dev/null; then
+        printf '%s\n' "$wt/.agents/hooks.json"
+      fi
+      ;;
     # gemini's busy-state and turn-end hooks live in a firstmate-owned
     # settings file the launch reaches through GEMINI_CLI_SYSTEM_SETTINGS_PATH,
     # so retiring that one file retires the whole incarnation's wiring. Nothing

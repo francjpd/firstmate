@@ -2,7 +2,7 @@
 
 `agy2` is the same Antigravity CLI (`agy`) running as a SECOND Antigravity account on this same Unix user, launched by [`bin/fm-agy2.sh`](../../../../../bin/fm-agy2.sh).
 Verified end to end on 2026-10-23 with agy 1.4.6 on Linux through the Herdr backend, on the identity mechanism and the dispatch path.
-Verified as a CREWMATE and SCOUT adapter only, exactly like `agy`.
+Verified as a CREWMATE, SCOUT, and SECONDMATE adapter.
 `../../../../../docs/verification/agy2.md` owns how every fact below was established and what is still unproven.
 
 ## What it is, and what it is not
@@ -19,9 +19,9 @@ The binding is permanent rather than per-session: the identity lives in that acc
 | Launch | `agy2 --prompt-interactive "<brief>" --model <id> --effort <level> --dangerously-skip-permissions`, identical to `agy`; the wrapper appends its own `--gemini_dir` and refuses a caller-supplied one. |
 | Identity | The wrapper runs its own `dbus-daemon` and its own `gnome-keyring-daemon` on a private socket under `~/.agy2`, so agy's keyring lookup reaches a second `service=gemini, username=antigravity` slot that no other process sees. |
 | State root | `~/.agy2` (`FM_AGY2_ROOT`), holding `gemini/` (the `--gemini_dir`), `data/keyrings/` (the private store), `keyring/` (the control socket), and `log/`. |
-| Busy state | Identical to `agy`: no hook surface, so nothing is armed and the `agy-regex` rendered-tail fallback classifies it. |
+| Busy state | Semantic busy-state via `Stop` lifecycle hook in `.agents/hooks.json` calling `bin/fm-busy-event.sh apply <state> <id> idle --gen <gen> --source agy-hook --event stop`; rendered-tail check remains the fallback for untrusted or hookless panes, reporting `unknown agy-regex`. |
 | Rendered tail | Identical to `agy`: `esc to cancel` on the busy status row, `? for shortcuts` when idle. |
-| Turn end | Identical to `agy`: worker status protocol, and on Herdr the native return to `idle`. |
+| Turn end | Proven turn-end signal from `Stop` lifecycle hook in `.agents/hooks.json`; worker status protocol and steering inbox. |
 | Exit | `/quit`, one Enter, identical to `agy`. |
 | Interrupt | Single `Escape`, identical to `agy`. |
 | Model | `--model <id>` with the bare catalog id from `agy2 models`; the pre-launch probe runs through the wrapper, so it reads the second identity's own catalog. |
@@ -93,7 +93,9 @@ Because `config/crew-dispatch.json` is captain-private, its live rule is applied
 }
 ```
 
-## Primary integration
+## Supervision and primary integration
 
-Unsupported, exactly as for `agy`: `../../../../../docs/supervision-protocols/` carries no Antigravity wake protocol, no turn-end guard adapter exists, and only the crewmate-side launch, busy state, interrupt, and exit are verified.
-`references/common/primary-hooks.md`'s unsupported-boundary rule applies.
+`agy2` is verified as a secondmate adapter.
+Secondmate supervision is supported via the `Stop` lifecycle hook in `.agents/hooks.json` and steering inbox, documented in [`docs/supervision-protocols/agy.md`](../../../../../docs/supervision-protocols/agy.md).
+Standalone primary firstmate session autonomous rewake remains unsupported because the agy CLI does not currently provide an exit-2 rewake mechanism or in-process background watcher extension.
+`references/common/primary-hooks.md`'s unsupported-boundary rule applies to standalone primary sessions.

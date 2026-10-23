@@ -42,7 +42,7 @@ set -u
 # ancestry the detection cases set up. Drop the ambient markers so the asserted
 # verdict does not depend on which harness launched the suite.
 unset CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT CURSOR_AGENT CURSOR_INVOKED_AS \
-  ATLASSIAN_AGENT_TYPE ROVODEV_CLI GEMINI_CLI AGENT FM_OMP_HARNESS
+  ATLASSIAN_AGENT_TYPE ROVODEV_CLI GEMINI_CLI AGENT FM_OMP_HARNESS FM_AGY2_HARNESS
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-control-lib.sh"
@@ -918,22 +918,25 @@ test_agy_secondmate_is_refused() {
   pass "fm-spawn: agy cannot be launched as a secondmate"
 }
 
-test_agy_spawn_arms_no_busy_wiring() {
-  local id rec out rc statedir
-  id="agy-nowiring-z7-$$"
-  rec=$(make_agy_spawn_case nowiring "$id")
+test_agy_spawn_arms_stop_hook_wiring() {
+  local id rec out rc statedir hook_file
+  id="agy-wiring-z7-$$"
+  rec=$(make_agy_spawn_case wiring "$id")
   read_agy_spawn_record "$rec"
   out=$(run_agy_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" \
     --model gemini-3.8-flash-low)
   rc=$?
   expect_code 0 "$rc" "agy spawn should succeed"
   statedir="$HOME_DIR/state"
-  [ -e "$statedir/$id.busy-gen" ] && fail "agy spawn armed a busy generation nothing could clear" || true
-  for sidecar in "$statedir/$id.agy-"*; do
-    [ -e "$sidecar" ] || continue
-    fail "agy spawn left an adapter sidecar behind: $sidecar"
-  done
-  pass "fm-spawn: agy arms no busy wiring and writes no sidecar"
+  [ -e "$statedir/$id.busy-gen" ] || fail "agy spawn must arm a busy generation"
+  hook_file="$WT_DIR/.agents/hooks.json"
+  [ -f "$hook_file" ] || fail "agy spawn must write .agents/hooks.json"
+  assert_contains "$(cat "$hook_file")" "firstmate" "hooks.json must contain firstmate key"
+  assert_contains "$(cat "$hook_file")" "Stop" "hooks.json must register Stop hook"
+  assert_contains "$(cat "$hook_file")" "fm-busy-event.sh" "hooks.json must call fm-busy-event.sh"
+  assert_contains "$(cat "$hook_file")" "idle" "hooks.json must apply idle state"
+  assert_contains "$(cat "$hook_file")" "--source agy-hook" "hooks.json must name agy-hook source"
+  pass "fm-spawn: agy arms busy-gen and writes Stop hook in .agents/hooks.json"
 }
 
 test_pi_relaunch_onto_agy_retires_busy_state_and_busy_gen() {
@@ -959,7 +962,7 @@ EOF
 
   # Seed the prior pi incarnation's wiring artifacts and semantic busy state
   touch "$HOME_DIR/state/$id.pi-ext.ts"
-  touch "$HOME_DIR/state/$id.busy-state"
+  printf 'prior-pi-state\n' > "$HOME_DIR/state/$id.busy-state"
   touch "$HOME_DIR/state/$id.busy-gen"
 
   # Set initial fake agy pane state to launched so Enter transitions to busy
@@ -972,13 +975,15 @@ EOF
   assert_contains "$out" "spawned $id harness=agy" "agy relaunch did not report success"
   [ ! -e "$HOME_DIR/state/$id.pi-ext.ts" ] \
     || fail "the retired pi incarnation's extension was not cleared on relaunch to agy"
-  [ ! -e "$HOME_DIR/state/$id.busy-state" ] \
-    || fail "the retired pi incarnation's busy-state record was not cleared on relaunch to agy"
-  [ ! -e "$HOME_DIR/state/$id.busy-gen" ] \
-    || fail "the retired pi incarnation's busy-gen sidecar was not cleared on relaunch to agy"
+  assert_not_contains "$(cat "$HOME_DIR/state/$id.busy-state")" "prior-pi-state" \
+    "the retired pi incarnation's busy-state record was not replaced on relaunch to agy"
+  [ -e "$HOME_DIR/state/$id.busy-gen" ] \
+    || fail "the relaunched agy incarnation should arm its own busy-gen"
+  [ -f "$WT_DIR/.agents/hooks.json" ] \
+    || fail "the relaunched agy incarnation should write .agents/hooks.json"
   [ "$(cat "$CASE_DIR/agy.state")" = busy ] \
     || fail "the relaunch reported success before the pane reached busy state"
-  pass "fm-spawn: pi->agy relaunch retires prior pi wiring and confirms agy busy"
+  pass "fm-spawn: pi->agy relaunch retires prior pi wiring and arms agy busy wiring"
 }
 
 test_agy_ancestry_detects_the_native_command_name
@@ -1011,5 +1016,5 @@ test_agy_unregistered_path_without_a_dialog_fails_the_spawn
 test_agy_pre_trusted_path_that_never_turns_busy_fails_the_spawn
 test_agy_missing_binary_refuses_before_pane_creation
 test_agy_secondmate_is_refused
-test_agy_spawn_arms_no_busy_wiring
+test_agy_spawn_arms_stop_hook_wiring
 test_pi_relaunch_onto_agy_retires_busy_state_and_busy_gen

@@ -241,6 +241,7 @@ fm_busy_sources_for_harness() {  # <harness>
     polytoken) adapter=polytoken-hook ;;
     pi|pi-signed) adapter=pi-ext ;;
     omp) adapter=omp-ext ;;
+    agy|agy2) adapter=agy-hook ;;
     kimi*)
       fm_busy_kimi_verified || { printf ''; return 0; }
       adapter='kimi-wire kimi-hook'
@@ -999,10 +1000,17 @@ fm_busy_gemini_launch_prompt_tail() {
   printf '%s' "$buf" | grep -qiE "${FM_BUSY_GEMINI_APIKEY_PROMPT_REGEX:-Enter Gemini API Key}"
 }
 
+fm_busy_agy_launch_prompt_tail() {
+  local buf
+  buf=$(cat)
+  printf '%s' "$buf" | grep -qiE "${FM_BUSY_AGY_TRUST_PROMPT_REGEX:-Do you trust the contents of this project\\?}" \
+    && printf '%s' "$buf" | grep -qiE 'Yes, I trust this folder|No, exit'
+}
+
 # fm_busy_launch_prompt_parked: dispatch to the signature above for <harness>,
 # or fail when this harness has none. Consumes the tail on stdin. Scoped to
 # exactly the harnesses fm-spawn.sh arms with the fm-spawn busy source
-# (claude*, opencode*, pi, pi-signed, omp, gemini) since only those can ever
+# (claude*, opencode*, pi, pi-signed, omp, gemini, agy, agy2) since only those can ever
 # read a pinned "busy fm-spawn" record; codex and standalone Kimi already
 # classify unknown before a record is ever consulted, and opencode ships no
 # trust dialog at all.
@@ -1011,6 +1019,7 @@ fm_busy_launch_prompt_parked() {  # <harness>
     claude*) fm_busy_claude_launch_prompt_tail ;;
     pi | pi-signed | omp) fm_busy_pi_launch_prompt_tail ;;
     gemini) fm_busy_gemini_launch_prompt_tail ;;
+    agy | agy2) fm_busy_agy_launch_prompt_tail ;;
     *) return 1 ;;
   esac
 }
@@ -1072,14 +1081,14 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
         printf '%s %s' "$r_state" "$r_source"
       fi
       return 0
-    elif [ "$harness" != agy ]; then
+    elif [ "$harness" != agy ] && [ "$harness" != agy2 ]; then
       printf 'unknown source-mismatch'
       return 0
     fi
   fi
   case "$out" in
     malformed|gen-mismatch)
-      if [ "$harness" != agy ]; then
+      if [ "$harness" != agy ] && [ "$harness" != agy2 ]; then
         printf 'unknown %s' "$out"
         return 0
       fi

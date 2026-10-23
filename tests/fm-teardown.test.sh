@@ -2841,6 +2841,22 @@ test_teardown_leaves_polytoken_layer_for_other_harnesses() {
   pass "teardown scopes .polytoken wiring removal to polytoken tasks"
 }
 
+test_teardown_retires_agy_stop_hook_wiring_on_pool_return() {
+  local case_dir rc hook_file
+  case_dir=$(make_case agy-wiring)
+  write_meta "$case_dir" local-only ship
+  printf 'harness=agy2\n' >> "$case_dir/state/task-x1.meta"
+  hook_file="$case_dir/wt/.agents/hooks.json"
+  mkdir -p "$case_dir/wt/.agents"
+  printf '{"firstmate":{"Stop":[{"type":"command","command":"echo stop"}]}}\n' > "$hook_file"
+  rc=0
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "agy-wiring: teardown should succeed ($(cat "$case_dir/stderr"))"
+  assert_absent "$hook_file" "agy-wiring: the generated hook layer survived pool return"
+  assert_absent "$case_dir/wt/.agents" "agy-wiring: empty .agents directory survived pool return"
+  pass "teardown retires an agy task's generated Stop hook wiring on pool return"
+}
+
 test_herdr_teardown_clears_escalation_marker() {
   local case_dir marker
   case_dir=$(make_case herdr-marker-cleanup)
@@ -5202,6 +5218,7 @@ test_teardown_retires_polytoken_wiring_on_pool_return
 test_teardown_preserves_tracked_polytoken_layer
 test_teardown_preserves_ignored_project_polytoken_layer
 test_teardown_leaves_polytoken_layer_for_other_harnesses
+test_teardown_retires_agy_stop_hook_wiring_on_pool_return
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence

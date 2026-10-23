@@ -2733,7 +2733,7 @@ esac
 # docs/supervision-protocols/ carries no Command Code wake protocol (1.74.1).
 # polytoken has none either: only the crewmate/scout lifecycle is verified;
 # docs/supervision-protocols/ carries no polytoken primary wake protocol.
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ] || [ "$HARNESS" = agy2 ] || [ "$HARNESS" = devin ] || [ "$HARNESS" = commandcode ] || [ "$HARNESS" = polytoken ]; }; then
+if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ] || [ "$HARNESS" = devin ] || [ "$HARNESS" = commandcode ] || [ "$HARNESS" = polytoken ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -4936,7 +4936,7 @@ agy_pane_shows_trust_dialog() {  # <plain-pane-capture>
 }
 
 agy_pane_is_working() {  # <plain-pane-capture>
-  case "$(fm_busy_classify "$BACKEND" "$T" agy "$ID" "$STATE" "$1")" in
+  case "$(fm_busy_classify "$BACKEND" "$T" "$HARNESS" "$ID" "$STATE" "$1")" in
     busy*) return 0 ;;
   esac
   return 1
@@ -5243,7 +5243,13 @@ agy2)
   # agy2 reads its own settings store, so the pre-registration must target
   # agy2's state root; writing the fleet's store would both leave the dialog in
   # place and touch the first identity's file.
-  if [ "$KIND" != secondmate ]; then
+  if [ "$KIND" = secondmate ]; then
+    if "$FM_ROOT/bin/fm-agy-trust.sh" --secondmate-home "$PROJ_ABS" "$ID" --gemini-dir "${AGY2_GEMINI_DIR:-}" >/dev/null; then
+      AGY_TRUST_PREREGISTERED=1
+    else
+      echo "warning: could not pre-register agy2 workspace trust for $PROJ_ABS; the launch will answer the folder-trust dialog in window $T instead" >&2
+    fi
+  else
     if "$FM_ROOT/bin/fm-agy-trust.sh" "$WT" "$PROJ_ABS" --gemini-dir "${AGY2_GEMINI_DIR:-}" >/dev/null; then
       AGY_TRUST_PREREGISTERED=1
     else
@@ -5341,7 +5347,7 @@ if [ "$KIND" = secondmate ]; then
   busy_notify_turnend=false
   if [ "$RAW_LAUNCH" -ne 0 ]; then
     case "$HARNESS" in
-    claude* | pi | pi-signed | omp)
+    claude* | pi | pi-signed | omp | agy | agy2)
       WIRING_HARNESS=
       if [ -e "$STATE_REAL/$ID.busy-gen" ]; then
         "$FM_ROOT/bin/fm-busy-event.sh" retire "$STATE_REAL" "$ID" --current-gen || {
@@ -5366,7 +5372,7 @@ BUSY_GEN=
     ;;
   esac
   case "$WIRING_HARNESS" in
-  claude* | opencode* | pi | pi-signed | omp)
+  claude* | opencode* | pi | pi-signed | omp | agy | agy2)
     BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
       echo "error: failed to arm the busy-state contract for $ID" >&2
       exit 1
@@ -5820,6 +5826,45 @@ EOF
       exclude_path '.polytoken/hooks.json'
       exclude_path '.polytoken/facets/firstmate-worker.md'
     fi
+    ;;
+  agy | agy2)
+    # agy / agy2 semantic busy-state hook via Stop lifecycle event in
+    # .agents/hooks.json under the customization root ($WT/.agents).
+    # Hook commands run with cwd = $WT/.agents, so paths must be absolute.
+    # The Stop hook fires when the execution loop terminates, calling
+    # fm-busy-event.sh apply idle ... --source agy-hook --event stop.
+    # For a crewmate, it touches $TURNEND before recording idle to wake the watcher.
+    # Hook commands must output JSON on stdout, so printf '{}' completes it.
+    busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
+    busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source agy-hook"
+    stop_turnend=
+    if [ "$busy_notify_turnend" = true ]; then
+      stop_turnend="touch $(shell_quote "$TURNEND"); "
+    fi
+    agy_stop_cmd="${stop_turnend}$busy_cmd_prefix idle $busy_suffix --event stop >/dev/null 2>&1 || true; printf '{}'"
+    mkdir -p "$WT/.agents"
+    node -e '
+      const fs = require("node:fs");
+      const file = process.argv[1];
+      const cmd = process.argv[2];
+      let data = {};
+      if (fs.existsSync(file)) {
+        try { data = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { data = {}; }
+      }
+      data.firstmate = {
+        Stop: [
+          {
+            type: "command",
+            command: cmd
+          }
+        ]
+      };
+      fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+    ' "$WT/.agents/hooks.json" "$agy_stop_cmd" || {
+      echo "error: failed to write agy Stop hook for $ID" >&2
+      exit 1
+    }
+    exclude_path '.agents/hooks.json'
     ;;
   esac
 
