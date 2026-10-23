@@ -103,6 +103,32 @@ A daemon that is not its own, a store that is not writable, or a store that answ
 `bin/fm-harness.sh` names the worker `agy2` from the `FM_AGY2_HARNESS=agy2` launch marker, folding it onto the `agy` family so ancestry still decides ownership.
 Control, busy state, interrupt, and exit are the `agy` tables unchanged, reached through `fm_control_harness_family`'s `agy2 -> agy` fold.
 
+## Two identities at once, live in a Herdr lab pane
+
+Run 2026-10-23T11:30Z in an isolated `fm-lab-*` Herdr session created with `bin/fm-herdr-lab.sh` (the live `default` session was verified unchanged by the helper's fleet-state tripwire), in the disposable task worktree, with a synthetic token in the private slot standing in for the second subscription.
+Both CLIs ran from the same pane, one as a background child of the other:
+
+```
+$ agy --print '/quota'                # fleet identity, first subscription
+Gemini Models	Weekly Limit Remaining	0%	2026-10-25T20:24:31Z
+Claude and GPT models	Weekly Limit Remaining	68%	2026-10-30T09:32:51Z
+Claude and GPT models	Five Hour Limit Remaining	36%	2026-10-23T14:32:51Z
+fleet_rc=0
+
+$ agy2 --print '/quota'               # second identity, no subscription yet
+agy2: identity: second.subscription@example.invalid (fleet: spirituz@gmail.com)
+error: Eligibility check failed: UNAUTHENTICATED (code 401) ...
+I auth.go:157] ChainedAuth: authenticated via keyring (effective: keyring)
+I server_oauth.go:224] applyAuthResult: email=second.subscription@example.invalid, authMethod=consumer
+```
+
+The `agy2` process loaded its identity from `~/.agy2/data/keyrings` and answered on `~/.agy2/bus`; the fleet process answered on the session bus and produced the subscription's real windows.
+That is the mechanism proven under concurrency: the only missing input is a real second-subscription token, which is the captain's one-time `/login`.
+
+## Spawn path, end to end
+
+`tests/fm-agy2-harness.test.sh` drives the real `bin/fm-spawn.sh` with a fake tmux endpoint and a fake `agy2` script, and pins all of it: the resolved launcher path, `--prompt-interactive` with `--model` and `--effort`, `--dangerously-skip-permissions`, `harness=agy2` in task metadata, the trust entry landing in `<agy2-root>/gemini/antigravity-cli/settings.json` and NOT in the fleet's `~/.gemini` store, the refusal when the launcher reports no stored identity (with no CLI launched at all), and the secondmate refusal.
+
 ## Still unproven
 
 The decisive "two real subscriptions authenticated at the same time" run needs a second Google account that actually holds a subscription, which is the captain's own one-time `/login`.
