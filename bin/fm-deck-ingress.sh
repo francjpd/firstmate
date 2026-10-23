@@ -3,11 +3,14 @@
 #
 # Listens to ~/.local/state/deck-axi/ingress.jsonl, tracks read offset via
 # ~/.local/state/deck-axi/ingress.cursor, routes replies back to per-session
-# chat files, and performs bounded safe rotation.
+# chat files, updates message status badges (sent -> received -> answered),
+# and performs bounded safe rotation.
 #
 # Usage:
 #   fm-deck-ingress.sh poll [--limit <n>]
 #   fm-deck-ingress.sh reply <chat-file> "<message>"
+#   fm-deck-ingress.sh ack <chat-file> [message-id]
+#   fm-deck-ingress.sh watch
 #   fm-deck-ingress.sh status
 #   fm-deck-ingress.sh rotate [--max-lines <n>]
 #   fm-deck-ingress.sh path
@@ -60,6 +63,48 @@ cmd_status() {
   printf 'pending: %s\n' "$pending"
 }
 
+update_message_status() {
+  local chat_file="$1"
+  local target_id="${2:-}"
+  local new_status="${3:-received}"
+
+  python3 -c '
+import os, sys, json, tempfile
+chat_file = sys.argv[1]
+target_id = sys.argv[2]
+new_status = sys.argv[3]
+
+if not chat_file or not os.path.exists(chat_file):
+    sys.exit(0)
+
+lines = []
+updated = False
+with open(chat_file, "r", encoding="utf-8") as f:
+    for line in f:
+        line_str = line.strip()
+        if not line_str:
+            continue
+        try:
+            data = json.loads(line_str)
+            if data.get("role") == "captain":
+                if not target_id or data.get("id") == target_id:
+                    if data.get("status") != new_status:
+                        data["status"] = new_status
+                        updated = True
+            lines.append(json.dumps(data))
+        except Exception:
+            lines.append(line_str)
+
+if updated:
+    dir_name = os.path.dirname(chat_file)
+    fd, tmp = tempfile.mkstemp(dir=dir_name if dir_name else None, prefix=".chat_tmp_")
+    with open(fd, "w", encoding="utf-8") as f:
+        for l in lines:
+            f.write(l + "\n")
+    os.replace(tmp, chat_file)
+' "$chat_file" "$target_id" "$new_status"
+}
+
 cmd_poll() {
   ensure_dirs
   local limit=100
@@ -83,6 +128,41 @@ cmd_poll() {
     [ -n "$line" ] || continue
     current_line=$((current_line + 1))
     printf '%s\n' "$line"
+
+    # Automatically mark message received in destination chat file
+    python3 -c '
+import sys, json, os, tempfile
+try:
+    payload = json.loads(sys.argv[1])
+    chat_file = payload.get("chatFile")
+    msg_id = payload.get("id")
+    if chat_file and os.path.exists(chat_file):
+        lines = []
+        updated = False
+        with open(chat_file, "r", encoding="utf-8") as f:
+            for l in f:
+                l_str = l.strip()
+                if not l_str:
+                    continue
+                try:
+                    d = json.loads(l_str)
+                    if d.get("id") == msg_id and d.get("status") == "sent":
+                        d["status"] = "received"
+                        updated = True
+                    lines.append(json.dumps(d))
+                except Exception:
+                    lines.append(l_str)
+        if updated:
+            dname = os.path.dirname(chat_file)
+            fd, tmp = tempfile.mkstemp(dir=dname if dname else None, prefix=".chat_tmp_")
+            with open(fd, "w", encoding="utf-8") as f:
+                for l in lines:
+                    f.write(l + "\n")
+            os.replace(tmp, chat_file)
+except Exception:
+    pass
+' "$line"
+
     count=$((count + 1))
     if [ "$count" -ge "$limit" ]; then
       break
@@ -90,6 +170,17 @@ cmd_poll() {
   done < <(tail -n +"$start_line" "$INGRESS_FILE")
 
   set_cursor "$current_line"
+}
+
+cmd_ack() {
+  local chat_file="${1:-}"
+  local msg_id="${2:-}"
+
+  if [ -z "$chat_file" ]; then
+    echo "Usage: fm-deck-ingress.sh ack <chat-file> [message-id]" >&2
+    exit 1
+  fi
+  update_message_status "$chat_file" "$msg_id" "received"
 }
 
 cmd_reply() {
@@ -102,23 +193,69 @@ cmd_reply() {
     exit 1
   fi
 
-  mkdir -p "$(dirname "$chat_file")"
   local ts
   ts=$(date +%s%3N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
   local msg_id="m_${ts}"
 
-  # Format JSON line safely using python3
+  # Safely mark captain messages answered and append Firstmate response atomically
   python3 -c '
-import sys, json
-msg = {
-  "id": sys.argv[1],
-  "role": "firstmate",
-  "text": sys.argv[2],
-  "ts": int(sys.argv[3])
+import os, sys, json, tempfile
+chat_file = sys.argv[1]
+msg_id = sys.argv[2]
+text = sys.argv[3]
+ts = int(sys.argv[4])
+
+dir_name = os.path.dirname(chat_file)
+if dir_name:
+    os.makedirs(dir_name, exist_ok=True)
+
+lines = []
+if os.path.exists(chat_file):
+    with open(chat_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line_str = line.strip()
+            if not line_str:
+                continue
+            try:
+                data = json.loads(line_str)
+                if data.get("role") == "captain" and data.get("status") in ("sent", "received", "seen"):
+                    data["status"] = "answered"
+                lines.append(json.dumps(data))
+            except Exception:
+                lines.append(line_str)
+
+new_msg = {
+    "id": msg_id,
+    "role": "firstmate",
+    "text": text,
+    "ts": ts
 }
-with open(sys.argv[4], "a", encoding="utf-8") as f:
-  f.write(json.dumps(msg) + "\n")
-' "$msg_id" "$text" "$ts" "$chat_file"
+lines.append(json.dumps(new_msg))
+
+fd, tmp = tempfile.mkstemp(dir=dir_name if dir_name else None, prefix=".chat_tmp_")
+with open(fd, "w", encoding="utf-8") as f:
+    for l in lines:
+        f.write(l + "\n")
+os.replace(tmp, chat_file)
+' "$chat_file" "$msg_id" "$text" "$ts"
+}
+
+cmd_watch() {
+  ensure_dirs
+  echo "Watching $INGRESS_FILE for incoming deck messages..."
+  # Drain pending initially
+  cmd_poll || true
+
+  if command -v inotifywait >/dev/null 2>&1; then
+    while inotifywait -q -e modify "$INGRESS_FILE" >/dev/null 2>&1; do
+      cmd_poll || true
+    done
+  else
+    while true; do
+      cmd_poll || true
+      sleep 1
+    done
+  fi
 }
 
 cmd_rotate() {
@@ -157,10 +294,12 @@ case "${1:-}" in
   path) cmd_path ;;
   status) cmd_status ;;
   poll) shift; cmd_poll "$@" ;;
+  ack) shift; cmd_ack "$@" ;;
   reply) shift; cmd_reply "$@" ;;
+  watch) cmd_watch ;;
   rotate) shift; cmd_rotate "$@" ;;
   -h|--help)
-    echo "Usage: fm-deck-ingress.sh {path|status|poll|reply|rotate}"
+    echo "Usage: fm-deck-ingress.sh {path|status|poll|ack|reply|watch|rotate}"
     exit 0
     ;;
   *)

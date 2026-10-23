@@ -2,7 +2,7 @@
 # tests/fm-deck-ingress.test.sh - tests for fm-deck-ingress.sh
 set -euo pipefail
 
-echo "1..5"
+echo "1..7"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_DIR="$(mktemp -d /tmp/fm-ingress-test-XXXXXX)"
@@ -63,5 +63,26 @@ if [ -f "${DECK_INGRESS_FILE}.old" ] && grep -q "hello 3" "$DECK_INGRESS_FILE"; 
   echo "ok 5 - rotate preserved unread entries while archiving processed lines"
 else
   echo "not ok 5 - rotate failed: $rotate_out"
+  exit 1
+fi
+
+# Test 6: poll updates message status in chat file from sent to received
+echo '{"id":"m_status_1","role":"captain","text":"status test","status":"sent"}' > "$TEST_CHAT_FILE"
+echo "{\"id\":\"m_status_1\",\"chatFile\":\"$TEST_CHAT_FILE\",\"role\":\"captain\",\"text\":\"status test\"}" >> "$DECK_INGRESS_FILE"
+"$ROOT/bin/fm-deck-ingress.sh" poll >/dev/null
+
+if grep -q '"status": "received"' "$TEST_CHAT_FILE"; then
+  echo "ok 6 - poll marks captain message status as received in chat file"
+else
+  echo "not ok 6 - chat file status not updated to received: $(cat "$TEST_CHAT_FILE")"
+  exit 1
+fi
+
+# Test 7: reply updates captain messages to answered
+"$ROOT/bin/fm-deck-ingress.sh" reply "$TEST_CHAT_FILE" "Acknowledged and resolved."
+if grep -q '"status": "answered"' "$TEST_CHAT_FILE" && grep -q "Acknowledged and resolved." "$TEST_CHAT_FILE"; then
+  echo "ok 7 - reply marks previous captain messages as answered"
+else
+  echo "not ok 7 - captain message not marked answered after reply: $(cat "$TEST_CHAT_FILE")"
   exit 1
 fi
