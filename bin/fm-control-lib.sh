@@ -64,7 +64,7 @@ fm_control_verb_allowed() {  # <verb>
 # section 4's verified-adapter list; an unverified adapter is refused rather
 # than guessed at, exactly as a spawn on it would be.
 fm_control_harnesses() {
-  printf '%s\n' claude codex opencode pi pi-signed grok kimi cursor gemini muse rovo omp agy devin commandcode polytoken
+  printf '%s\n' claude codex opencode pi pi-signed grok kimi cursor gemini muse rovo omp agy agy2 devin commandcode polytoken
 }
 
 fm_control_harness_supported() {  # <harness>
@@ -90,6 +90,12 @@ fm_control_harness_family() {  # <recorded-harness>
     pi-signed) printf 'pi-signed' ;;
     omp) printf 'omp' ;;
     agy) printf 'agy' ;;
+    # agy2 is the second Antigravity identity: bin/fm-agy2.sh runs the same agy
+    # binary, so every control-plane table above that is keyed by `agy` (the
+    # interrupt key, its repeat count and gap, the exit command, the transport)
+    # applies to it unchanged. Folding it here is what lets the recorded harness
+    # stay `agy2` in task metadata while control still drives the agy surface.
+    agy2) printf 'agy' ;;
     devin) printf 'devin' ;;
     commandcode) printf 'commandcode' ;;
     polytoken) printf 'polytoken' ;;
@@ -116,7 +122,7 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-    muse|gemini|rovo|agy|devin|commandcode|polytoken) [ "$kind" != secondmate ] || return 1 ;;
+    muse|gemini|rovo|agy|agy2|devin|commandcode|polytoken) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }

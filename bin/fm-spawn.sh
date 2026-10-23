@@ -215,7 +215,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|devin|commandcode)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|agy2|devin|commandcode|polytoken)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
@@ -476,6 +476,8 @@
 #     __COMMANDCODEBIN__ resolved Command Code executable
 #     __COMMANDCODEMOD__ --mod and --mod-option arguments of the busy-state mod
 #     __AGYBIN__    resolved, agy-verified executable for an agy launch
+#     __AGY2BIN__   resolved agy2 launcher for an agy2 launch
+#                  Antigravity identity's own Secret Service and state root
 #     __POLYTOKENBIN__ resolved, polytoken-verified executable for a polytoken launch
 #     __POLYTOKENCONFIG__ firstmate-owned per-task polytoken config dir (mirrored
 #                  operator config with the unattended permission posture enforced)
@@ -528,6 +530,14 @@
 # busy turn - answering the dialog first if it renders anyway - before
 # reporting success (the rovo/kimi launch-then-confirm shape). Its busy state
 # is a screen-scrape fallback like grok and rovo, and it is crewmate/scout only.
+# agy2 is the SECOND Antigravity identity: bin/fm-agy2.sh runs the same agy
+# binary against its own Secret Service, so every agy fact above applies to it
+# verbatim (no hook, brief on the launch command, folder-trust gate). Its two
+# differences are that the trust store it reads is agy2's own
+# <root>/antigravity-cli/settings.json rather than the fleet's, and that the
+# spawn refuses outright when the second store holds no distinct identity,
+# because an agy2 pane with no credential parks on an interactive login nobody
+# is there to finish. It is crewmate/scout only, like agy.
 # cursor installs no per-task hook either: it writes state/<id>.cursor-session to
 # bind the pane to cursor's own conversation transcript (projects root, the exact
 # workspace path cursor records in .workspace-trusted, and the conversations that
@@ -2220,7 +2230,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-  '' | claude | codex | opencode | pi | pi-signed | grok | kimi | cursor | gemini | muse | rovo | omp | agy | devin | commandcode | polytoken)
+  '' | claude | codex | opencode | pi | pi-signed | grok | kimi | cursor | gemini | muse | rovo | omp | agy | agy2 | devin | commandcode | polytoken)
     ARG3=${POS[1]:-}
     ;;
   *' '*)
@@ -2487,7 +2497,17 @@ launch_template() {
   # TUI), so bin/fm-harness.sh must not read an agy worker as its launcher.
   # agy exposes no hook surface, so busy state is a rendered-tail fallback
   # (bin/fm-busy-lib.sh) and nothing is armed below.
-  agy) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __AGYBIN__ --prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)" __MODELFLAG____EFFORTFLAG__--dangerously-skip-permissions' ;;
+  agy) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u FM_AGY2_HARNESS __AGYBIN__ --prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)" __MODELFLAG____EFFORTFLAG__--dangerously-skip-permissions' ;;
+  # agy2 is the same CLI under a second Antigravity identity: bin/fm-agy2.sh
+  # replaces DBUS_SESSION_BUS_ADDRESS with its own bus, proves the isolation
+  # it claims, names the identity it is about to run as, and only then execs
+  # the same agy binary with --gemini_dir pointing at that identity's state
+  # root. The launch is therefore identical to agy's, and the wrapper - not
+  # this template - owns the identity decision, so nothing here can drift back
+  # to the fleet account. The wrapper exports FM_AGY2_HARNESS=agy2 itself, so
+  # bin/fm-harness.sh names this worker agy2 rather than agy even though the
+  # live process name is agy.
+  agy2) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __AGY2BIN__ --prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)" __MODELFLAG____EFFORTFLAG__--dangerously-skip-permissions' ;;
   # grok (Grok Build TUI): a positional prompt starts the supervised interactive
   # session. --always-approve auto-approves every tool execution (verified: the
   # crewmate runs fully autonomously, no permission gate), which an unattended
@@ -2713,7 +2733,7 @@ esac
 # docs/supervision-protocols/ carries no Command Code wake protocol (1.74.1).
 # polytoken has none either: only the crewmate/scout lifecycle is verified;
 # docs/supervision-protocols/ carries no polytoken primary wake protocol.
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ] || [ "$HARNESS" = devin ] || [ "$HARNESS" = commandcode ] || [ "$HARNESS" = polytoken ]; }; then
+if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ] || [ "$HARNESS" = agy2 ] || [ "$HARNESS" = devin ] || [ "$HARNESS" = commandcode ] || [ "$HARNESS" = polytoken ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -2806,11 +2826,37 @@ omp)
     exit 1
   }
   ;;
-agy)
+agy|agy2)
   AGY_BIN=$(resolve_pi_executable agy) || {
     echo "error: agy executable not found on PATH; install Antigravity CLI or select a different verified harness" >&2
     exit 1
   }
+  if [ "$HARNESS" = agy2 ]; then
+    # The launcher is the identity boundary, so it is resolved once and the
+    # pane runs exactly that path. PATH first (the captain's own `agy2`
+    # symlink), then this repository's bin/fm-agy2.sh so a home that has not
+    # installed the symlink still dispatches on a verified adapter instead of
+    # falling back to anything.
+    AGY2_BIN=$(command -v agy2 2>/dev/null) || AGY2_BIN=
+    [ -n "$AGY2_BIN" ] || AGY2_BIN=$SCRIPT_DIR/fm-agy2.sh
+    [ -x "$AGY2_BIN" ] || {
+      echo "error: the agy2 launcher is not executable at '$AGY2_BIN'; install bin/fm-agy2.sh as 'agy2' in PATH or select a different verified harness" >&2
+      exit 1
+    }
+    # Verified end to end before any pane exists: the launcher must answer for
+    # itself (its own bus, its own keyring store) and must hold a second
+    # identity that is not the fleet's. An agy2 pane with no credential parks
+    # on an interactive login nobody would finish, so that state refuses.
+    if ! AGY2_ROOT=$("$AGY2_BIN" --agy2-root 2>/dev/null) || [ -z "$AGY2_ROOT" ]; then
+      echo "error: '$AGY2_BIN --agy2-root' did not answer; refusing to launch agy2 from an unverified launcher" >&2
+      exit 1
+    fi
+    if ! "$AGY2_BIN" --agy2-ready 2>/dev/null; then
+      echo "error: agy2 holds no second Antigravity identity yet, so its pane would park on an interactive login. Run agy2 and complete /login as the second account once, then retry this spawn." >&2
+      exit 1
+    fi
+    AGY2_GEMINI_DIR=$AGY2_ROOT/gemini
+  fi
   ;;
 polytoken)
   POLYTOKEN_BIN=$(fm_polytoken_binary) || {
@@ -2853,8 +2899,8 @@ fi
 if [ "$HARNESS" = omp ]; then
   omp_model_validate "$OMP_BIN" "$MODEL" || exit 1
 fi
-if [ "$HARNESS" = agy ]; then
-  agy_model_validate "$AGY_BIN" "$MODEL" || exit 1
+if [ "$HARNESS" = agy ] || [ "$HARNESS" = agy2 ]; then
+  agy_model_validate "${AGY2_BIN:-$AGY_BIN}" "$MODEL" || exit 1
 fi
 # polytoken's model validation composes firstmate's model and effort axes into
 # the launch model reference (bin/fm-polytoken-lib.sh owns the reasoning): the
@@ -3051,7 +3097,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-  claude | codex | opencode | pi | pi-signed | grok | kimi | cursor | gemini | muse | rovo | omp | agy | devin | commandcode)
+  claude | codex | opencode | pi | pi-signed | grok | kimi | cursor | gemini | muse | rovo | omp | agy | agy2 | devin | commandcode)
     printf -- '--model %s ' "$(shell_quote "$model")"
     ;;
   # polytoken encodes reasoning effort inside the model reference, so the
@@ -3094,9 +3140,10 @@ effort_flag_for_harness() {
     low | medium | high) printf -- '--reasoning-effort %s ' "$(shell_quote "$effort")" ;;
     esac
     ;;
-  agy)
+  agy | agy2)
     # agy 1.2.0 --effort accepts exactly low|medium|high, so xhigh and max are
-    # omitted rather than passed as known-bad values (record-and-omit).
+    # omitted rather than passed as known-bad values (record-and-omit). agy2 is
+    # the same binary, so the accepted set is identical.
     case "$effort" in
     low | medium | high) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
     esac
@@ -5192,6 +5239,18 @@ agy)
     fi
   fi
   ;;
+agy2)
+  # agy2 reads its own settings store, so the pre-registration must target
+  # agy2's state root; writing the fleet's store would both leave the dialog in
+  # place and touch the first identity's file.
+  if [ "$KIND" != secondmate ]; then
+    if "$FM_ROOT/bin/fm-agy-trust.sh" "$WT" "$PROJ_ABS" --gemini-dir "${AGY2_GEMINI_DIR:-}" >/dev/null; then
+      AGY_TRUST_PREREGISTERED=1
+    else
+      echo "warning: could not pre-register agy2 workspace trust for $WT; the launch will answer the folder-trust dialog in window $T instead" >&2
+    fi
+  fi
+  ;;
 esac
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -6093,6 +6152,7 @@ commandcode)
   LAUNCH=${LAUNCH//__COMMANDCODEMOD__/$COMMANDCODEMOD}
   ;;
 agy) LAUNCH=${LAUNCH//__AGYBIN__/"$(shell_quote "$AGY_BIN")"} ;;
+agy2) LAUNCH=${LAUNCH//__AGY2BIN__/"$(shell_quote "$AGY2_BIN")"} ;;
 polytoken)
   LAUNCH=${LAUNCH//__POLYTOKENBIN__/"$(shell_quote "$POLYTOKEN_BIN")"}
   LAUNCH=${LAUNCH//__POLYTOKENCONFIG__/"$(shell_quote "$(fm_polytoken_config_dir "$STATE_REAL" "$ID")")"}
@@ -6126,7 +6186,7 @@ case "$LAUNCH" in
   ;;
 esac
 case "$HARNESS" in
-claude | codex | opencode | pi | pi-signed | grok | kimi | gemini | muse | rovo | agy | devin | commandcode)
+claude | codex | opencode | pi | pi-signed | grok | kimi | gemini | muse | rovo | agy | agy2 | devin | commandcode)
   LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI $LAUNCH"
   ;;
 esac
@@ -6500,14 +6560,14 @@ if [ "$HARNESS" = rovo ]; then
     exit 1
   fi
 fi
-if [ "$HARNESS" = agy ]; then
+if [ "$HARNESS" = agy ] || [ "$HARNESS" = agy2 ]; then
   if ! agy_wait_for_working; then
     if [ "$AGY_TRUST_ANSWERED" -eq 1 ]; then
-      agy_spawn_fail "agy did not start processing its brief after the folder-trust dialog was answered in window $T"
+      agy_spawn_fail "$HARNESS did not start processing its brief after the folder-trust dialog was answered in window $T"
     elif [ "$AGY_TRUST_PREREGISTERED" -eq 1 ]; then
-      agy_spawn_fail "agy did not start processing its brief in the pre-trusted worktree in window $T"
+      agy_spawn_fail "$HARNESS did not start processing its brief in the pre-trusted worktree in window $T"
     else
-      agy_spawn_fail "agy never showed its folder-trust dialog on an unregistered worktree in window $T, so the brief could not be confirmed to run there"
+      agy_spawn_fail "$HARNESS never showed its folder-trust dialog on an unregistered worktree in window $T, so the brief could not be confirmed to run there"
     fi
     exit 1
   fi

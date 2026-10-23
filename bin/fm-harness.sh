@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|devin|commandcode|polytoken|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|agy2|devin|commandcode|polytoken|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -128,6 +128,14 @@ harness_marker() {
     echo omp
     return
   fi
+  # agy2 is Firstmate's SECOND Antigravity identity: bin/fm-agy2.sh points the
+  # same agy binary at its own Secret Service and its own state root, so the
+  # live process name is still `agy` and ancestry can never tell the two
+  # identities apart. FM_AGY2_HARNESS=agy2 is therefore a Firstmate-OWNED
+  # launch marker in the pi-signed shape: the marker names the identity while
+  # ancestry proves the family, and harness_family() below folds agy2 back to
+  # agy so a fleet `agy` session that never saw this marker is unaffected.
+  [ "${FM_AGY2_HARNESS:-}" = agy2 ] && { echo agy2; return; }
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
   if [ "${PI_CODING_AGENT:-}" = "true" ]; then
     if [ "${FM_PI_HARNESS:-}" = pi-signed ]; then echo pi-signed; else echo pi; fi
@@ -401,10 +409,14 @@ harness_ancestry_descent() {  # <root> [<eligible-leaf-pid>...]
 
 # Collapse a verdict to the harness FAMILY its evidence can actually prove, so a
 # marker's more specific verdict and ancestry's coarser one are not read as a
-# disagreement. Only Pi has two identities behind one launcher name.
+# disagreement. Pi has two identities behind one launcher name, and agy2 is a
+# second identity behind the same `agy` binary, so both fold onto their family:
+# the marker then supplies the identity while ancestry supplies the proof of
+# ownership.
 harness_family() {
   case "$1" in
     pi-signed) printf 'pi\n' ;;
+    agy2) printf 'agy\n' ;;
     *) printf '%s\n' "$1" ;;
   esac
 }

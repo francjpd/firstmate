@@ -1154,7 +1154,10 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       fi
       return 0
       ;;
-    agy)
+    # agy2 is the second Antigravity identity on the same agy binary through
+    # bin/fm-agy2.sh, so its rendered tail carries the identical status row and
+    # the same fallback classifies it. It has no hook surface either.
+    agy|agy2)
       if [ -z "$tail40" ]; then
         if command -v fm_backend_capture >/dev/null 2>&1; then
           tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {

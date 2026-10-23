@@ -4,15 +4,21 @@
 # reaches its brief in the worktree instead of parking on the folder-trust
 # dialog and running its turn in agy's own scratch directory.
 #
-# Usage: fm-agy-trust.sh <worktree> <project>
-#   <worktree>  the isolated task worktree this spawn launches into
-#   <project>   the primary checkout that worktree belongs to
+# Usage: fm-agy-trust.sh <worktree> <project> [--gemini-dir <root>]
+#   <worktree>    the isolated task worktree this spawn launches into
+#   <project>     the primary checkout that worktree belongs to
+#   --gemini-dir  the state root agy will read, i.e. the `--gemini_dir` the
+#                 launch pins; it selects <root>/antigravity-cli/settings.json
+#                 instead of the default $HOME/.gemini/antigravity-cli one. This
+#                 is what an `agy2` launch passes, so the trust lands in the
+#                 second identity's own store rather than the fleet's.
 # Prints one line naming what it registered; refuses loudly on anything else.
 #
 # WHY THIS EXISTS. agy 1.2.0 gates a folder it has never seen behind
 # "Do you trust the contents of this project?" and no launch flag suppresses
 # it (`agy --help` lists none). Answering appends the folder to the
-# `trustedWorkspaces` array of ${HOME}/.gemini/antigravity-cli/settings.json,
+# `trustedWorkspaces` array of ${HOME}/.gemini/antigravity-cli/settings.json
+# (or <gemini-dir>/antigravity-cli/settings.json when a root is passed),
 # and agy honours an entry written there ahead of launch: verified live under a
 # throwaway HOME, a pre-registered folder launched straight into its turn while
 # an unregistered sibling parked on the dialog (docs/verification/agy.md). agy
@@ -39,9 +45,22 @@ unset CDPATH \
   GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_CONFIG GIT_CONFIG_GLOBAL \
   GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT
 
-[ "$#" -eq 2 ] || { echo "usage: fm-agy-trust.sh <worktree> <project>" >&2; exit 2; }
+[ "$#" -ge 2 ] || { echo "usage: fm-agy-trust.sh <worktree> <project> [--gemini-dir <root>]" >&2; exit 2; }
 WT_ARG=$1
 PROJ_ARG=$2
+shift 2
+GEMINI_ROOT=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --gemini-dir)
+      [ "$#" -ge 2 ] || { echo "usage: fm-agy-trust.sh <worktree> <project> [--gemini-dir <root>]" >&2; exit 2; }
+      GEMINI_ROOT=$2
+      shift 2
+      ;;
+    --gemini-dir=*) GEMINI_ROOT=${1#*=}; shift ;;
+    *) echo "usage: fm-agy-trust.sh <worktree> <project> [--gemini-dir <root>]" >&2; exit 2 ;;
+  esac
+done
 
 refuse() { echo "error: refusing to pre-register agy trust: $1" >&2; exit 1; }
 
@@ -87,6 +106,20 @@ PROJ_COMMON=$(common_dir_of "$PROJ_REAL") || true
 command -v node >/dev/null 2>&1 || refuse "node is required to record workspace trust and was not found on PATH"
 
 STORE_DIR="$HOME_REAL/.gemini/antigravity-cli"
+if [ -n "$GEMINI_ROOT" ]; then
+  case "$GEMINI_ROOT" in
+    /*) ;;
+    *) refuse "--gemini-dir '$GEMINI_ROOT' is not an absolute path" ;;
+  esac
+  [ "$GEMINI_ROOT" != / ] || refuse "--gemini-dir must not be the filesystem root"
+  [ "$GEMINI_ROOT" != "$HOME_REAL" ] || refuse "--gemini-dir must not be the home directory itself"
+  mkdir -p "$GEMINI_ROOT" 2>/dev/null || true
+  GEMINI_REAL=$(real_dir "$GEMINI_ROOT") || true
+  [ -n "$GEMINI_REAL" ] || refuse "--gemini-dir '$GEMINI_ROOT' is not an accessible directory"
+  [ "$GEMINI_REAL" != "$HOME_REAL" ] || refuse "--gemini-dir resolves to the home directory itself"
+  [ -O "$GEMINI_REAL" ] || refuse "--gemini-dir '$GEMINI_REAL' is not owned by this user"
+  STORE_DIR="$GEMINI_REAL/antigravity-cli"
+fi
 mkdir -p "$STORE_DIR" 2>/dev/null || true
 STORE_DIR_REAL=$(real_dir "$STORE_DIR") || true
 [ -n "$STORE_DIR_REAL" ] || refuse "agy settings directory '$STORE_DIR' does not exist and could not be created"
