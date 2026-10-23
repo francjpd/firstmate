@@ -60,6 +60,7 @@ EOF
 DIRECTION="right"
 FORCE_STANDALONE=0
 DRY_RUN=0
+ZOOM_MODAL=1
 ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -79,6 +80,14 @@ while [ $# -gt 0 ]; do
       fi
       DIRECTION="$2"
       shift 2
+      ;;
+    --modal|--zoom)
+      ZOOM_MODAL=1
+      shift
+      ;;
+    --no-zoom|--sidecar)
+      ZOOM_MODAL=0
+      shift
       ;;
     --standalone)
       FORCE_STANDALONE=1
@@ -115,6 +124,7 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "multiplexer: $MUX"
   echo "direction: $DIRECTION"
+  echo "modal: $ZOOM_MODAL"
   echo "args: ${ARGS[*]}"
   exit 0
 fi
@@ -135,7 +145,10 @@ case "$MUX" in
     fi
 
     herdr pane run "$NEW_PANE" deck-axi "${ARGS[@]}"
-    echo "Launched deck-axi in Herdr pane $NEW_PANE"
+    if [ "$ZOOM_MODAL" -eq 1 ]; then
+      herdr pane zoom --pane "$NEW_PANE" --on >/dev/null 2>&1 || true
+    fi
+    echo "Launched deck-axi in Herdr pane $NEW_PANE (modal: $ZOOM_MODAL)"
     ;;
 
   tmux)
@@ -144,12 +157,18 @@ case "$MUX" in
       TMUX_FLAG="-v"
     fi
     tmux split-window "$TMUX_FLAG" deck-axi "${ARGS[@]}"
-    echo "Launched deck-axi in tmux pane (split $DIRECTION)"
+    if [ "$ZOOM_MODAL" -eq 1 ]; then
+      tmux resize-pane -Z >/dev/null 2>&1 || true
+    fi
+    echo "Launched deck-axi in tmux pane (split $DIRECTION, modal: $ZOOM_MODAL)"
     ;;
 
   zellij)
     zellij action new-pane --direction "$DIRECTION" -- deck-axi "${ARGS[@]}"
-    echo "Launched deck-axi in zellij pane (split $DIRECTION)"
+    if [ "$ZOOM_MODAL" -eq 1 ]; then
+      zellij action toggle-fullscreen >/dev/null 2>&1 || true
+    fi
+    echo "Launched deck-axi in zellij pane (split $DIRECTION, modal: $ZOOM_MODAL)"
     ;;
 
   standalone)

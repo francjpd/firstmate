@@ -2,7 +2,7 @@
 # tests/fm-deck.test.sh - TAP tests for bin/fm-deck.sh multiplexer-aware launcher
 set -euo pipefail
 
-echo "1..6"
+echo "1..8"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT/bin/fm-deck.sh"
@@ -69,5 +69,23 @@ if echo "$dry_standalone" | grep -q "multiplexer: standalone" && echo "$dry_stan
   echo "ok 6 - --standalone overrides detected multiplexer"
 else
   echo "not ok 6 - unexpected dry standalone output: $dry_standalone"
+  exit 1
+fi
+
+# Test 7: modal zoom is enabled by default in dry-run
+dry_modal=$("$BIN" --dry-run bearings)
+if echo "$dry_modal" | grep -q "modal: 1"; then
+  echo "ok 7 - modal zoom enabled by default"
+else
+  echo "not ok 7 - expected modal: 1, got: $dry_modal"
+  exit 1
+fi
+
+# Test 8: --sidecar disables modal zoom
+dry_sidecar=$("$BIN" --sidecar --dry-run bearings)
+if echo "$dry_sidecar" | grep -q "modal: 0"; then
+  echo "ok 8 - --sidecar disables modal zoom"
+else
+  echo "not ok 8 - expected modal: 0, got: $dry_sidecar"
   exit 1
 fi
