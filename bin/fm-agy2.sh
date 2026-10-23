@@ -71,7 +71,11 @@
 # The state root defaults to ~/.agy2 and moves with FM_AGY2_ROOT. It holds the
 # gemini tree, the private bus socket, the private keyring store, the unlock
 # passphrase for that store (0600, generated once - a convenience lock, not a
-# secrecy boundary, since the same uid owns the files), and logs.
+# secrecy boundary, since the same uid owns the files), and logs. The private
+# bus and keyring daemon stay up between launches, so a second `agy2` reuses the
+# same identity instead of racing to create it; `--agy2-status` prints their pid
+# and they cost a few megabytes. Nothing here is ever started as, or attached
+# to, the fleet's own session bus.
 #
 # This script is a Firstmate-owned launcher, not a supervisor: it never writes
 # a task's status file, never speaks to the captain, and never runs agy's
@@ -234,7 +238,7 @@ ensure_keyring() {
 assert_store_isolated() {
   local value back fleet_hit real_store our_store
   value="pid-$$-$(date +%s)"
-  real_store=$(cd -P "$HOME/.local/share/keyrings" 2>/dev/null && pwd -P) || real_store=
+  real_store=$(cd -P "${XDG_DATA_HOME:-$HOME/.local/share}/keyrings" 2>/dev/null && pwd -P) || real_store=
   our_store=$(cd -P "$DATA/keyrings" 2>/dev/null && pwd -P) || our_store=
   if [ -n "$real_store" ] && [ "$real_store" = "$our_store" ]; then
     die "the agy2 store resolves to the fleet's own keyring directory ($real_store); refusing to launch"
