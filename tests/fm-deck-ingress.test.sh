@@ -2,7 +2,7 @@
 # tests/fm-deck-ingress.test.sh - tests for fm-deck-ingress.sh
 set -euo pipefail
 
-echo "1..7"
+echo "1..8"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_DIR="$(mktemp -d /tmp/fm-ingress-test-XXXXXX)"
@@ -84,5 +84,15 @@ if grep -q '"status": "answered"' "$TEST_CHAT_FILE" && grep -q "Acknowledged and
   echo "ok 7 - reply marks previous captain messages as answered"
 else
   echo "not ok 7 - captain message not marked answered after reply: $(cat "$TEST_CHAT_FILE")"
+  exit 1
+fi
+
+# Test 8: wait command consumes newly appended message
+( sleep 0.3 && echo '{"id":"m_wait_1","chatFile":"'$TEST_CHAT_FILE'","role":"captain","text":"wait test","status":"sent"}' >> "$DECK_INGRESS_FILE" ) &
+wait_out=$("$ROOT/bin/fm-deck-ingress.sh" wait 3)
+if echo "$wait_out" | grep -q "wait test"; then
+  echo "ok 8 - wait command successfully blocks and captures incoming message"
+else
+  echo "not ok 8 - wait command failed to capture message: $wait_out"
   exit 1
 fi

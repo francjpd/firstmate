@@ -240,6 +240,45 @@ os.replace(tmp, chat_file)
 ' "$chat_file" "$msg_id" "$text" "$ts"
 }
 
+cmd_wait() {
+  ensure_dirs
+  local timeout="${1:-}"
+
+  local cursor total
+  cursor=$(get_cursor)
+  total=$(wc -l < "$INGRESS_FILE" | tr -d ' ')
+
+  if [ "$total" -gt "$cursor" ]; then
+    cmd_poll --limit 1
+    return 0
+  fi
+
+  if command -v inotifywait >/dev/null 2>&1; then
+    while [ "$total" -le "$cursor" ]; do
+      if [ -n "$timeout" ]; then
+        if ! inotifywait -t "$timeout" -q -e modify "$INGRESS_FILE" >/dev/null 2>&1; then
+          return 0
+        fi
+      else
+        inotifywait -q -e modify "$INGRESS_FILE" >/dev/null 2>&1 || true
+      fi
+      total=$(wc -l < "$INGRESS_FILE" | tr -d ' ')
+    done
+  else
+    local elapsed=0
+    while [ "$total" -le "$cursor" ]; do
+      sleep 1
+      elapsed=$((elapsed + 1))
+      if [ -n "$timeout" ] && [ "$elapsed" -ge "$timeout" ]; then
+        return 0
+      fi
+      total=$(wc -l < "$INGRESS_FILE" | tr -d ' ')
+    done
+  fi
+
+  cmd_poll --limit 1
+}
+
 cmd_watch() {
   ensure_dirs
   echo "Watching $INGRESS_FILE for incoming deck messages..."
@@ -296,6 +335,7 @@ case "${1:-}" in
   poll) shift; cmd_poll "$@" ;;
   ack) shift; cmd_ack "$@" ;;
   reply) shift; cmd_reply "$@" ;;
+  wait) shift; cmd_wait "$@" ;;
   watch) cmd_watch ;;
   rotate) shift; cmd_rotate "$@" ;;
   -h|--help)
