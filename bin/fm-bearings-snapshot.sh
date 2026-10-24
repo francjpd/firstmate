@@ -260,7 +260,8 @@ repo_slug() {  # <url>
 # bin/fm-timeout-lib.sh owns the bound itself.
 gh_bounded() {  # <args...>
   fm_run_timed "$FM_BEARINGS_PR_TIMEOUT" \
-    env GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 gh "$@"
+    env GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 \
+      DBUS_SESSION_BUS_ADDRESS="${FM_AGY2_REAL_BUS:-${DBUS_SESSION_BUS_ADDRESS:-}}" gh "$@"
 }
 
 if [ "$INCLUDE_PRS" = 1 ]; then
