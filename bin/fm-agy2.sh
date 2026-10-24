@@ -158,7 +158,10 @@ ensure_bus() {
   bus_alive && return 0
   rm -f "$BUS"
   local out
-  out=$(dbus-daemon --session --fork --address="$BUS_ADDR" --print-address=1 --print-pid=1 2>"$LOG_DIR/bus.err") || {
+  # 9>&- keeps the bring-up lock out of the daemon: a forked daemon that
+  # inherited it would hold the flock for its whole lifetime, and every later
+  # agy2 launch would then die with "another agy2 launch is still setting up".
+  out=$(dbus-daemon --session --fork --address="$BUS_ADDR" --print-address=1 --print-pid=1 9>&- 2>"$LOG_DIR/bus.err") || {
     die "could not start the private session bus at $BUS: $(tr '\n' ' ' <"$LOG_DIR/bus.err" 2>/dev/null)"
   }
   printf '%s\n' "$out" | tail -n 1 >"$BUS_PID_FILE"
@@ -218,7 +221,7 @@ ensure_keyring() {
     | env DBUS_SESSION_BUS_ADDRESS="$BUS_ADDR" XDG_DATA_HOME="$DATA" \
         GNOME_KEYRING_CONTROL="$KEYRING_DIR" \
         gnome-keyring-daemon --unlock --components=secrets \
-        --control-directory="$KEYRING_DIR" --daemonize \
+        --control-directory="$KEYRING_DIR" --daemonize 9>&- \
         >"$LOG_DIR/keyring.env" 2>"$LOG_DIR/keyring.err" \
     || die "could not start the private gnome-keyring-daemon: $(tr '\n' ' ' <"$LOG_DIR/keyring.err" 2>/dev/null)"
   for _ in $(seq 1 50); do
