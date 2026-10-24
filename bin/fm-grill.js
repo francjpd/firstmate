@@ -93,7 +93,8 @@ switch (command) {
   }
 
   case 'tui': {
-    const bin = 'deck-axi';
+    const deckLauncher = path.join(__dirname, 'fm-deck.sh');
+    const bin = fs.existsSync(deckLauncher) ? deckLauncher : 'deck-axi';
     console.log(`Launching ${bin} TUI for ${jsonPath}`);
     execFileSync(bin, ['grill', jsonPath], { stdio: 'inherit' });
     break;

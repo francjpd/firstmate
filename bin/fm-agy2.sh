@@ -103,6 +103,7 @@ CACHE=$ROOT/cache
 PASS_FILE=$ROOT/passphrase
 LOG_DIR=$ROOT/log
 BUS_ADDR=unix:path=$ROOT/bus
+SHIMS_DIR=$ROOT/shims
 
 # The fleet's own session bus. Captured once and re-exported into the launch so
 # a nested `agy2` (or a tool that shells back into agy) still knows which bus is
@@ -283,6 +284,58 @@ assert_identity() {
   fi
 }
 
+ensure_shims() {
+  mkdir -p "$SHIMS_DIR" 2>/dev/null || return 0
+
+  if [ ! -x "$SHIMS_DIR/gh" ]; then
+    cat <<'EOF' >"$SHIMS_DIR/gh"
+#!/usr/bin/env bash
+if [ -n "${FM_AGY2_REAL_BUS:-}" ]; then
+  export DBUS_SESSION_BUS_ADDRESS="$FM_AGY2_REAL_BUS"
+fi
+canonical_self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$0")
+target=""
+for cmd in $(which -a gh 2>/dev/null); do
+  real_cmd=$(readlink -f "$cmd" 2>/dev/null || printf '%s' "$cmd")
+  if [ "$real_cmd" != "$canonical_self" ] && [ -x "$cmd" ]; then
+    target="$cmd"
+    break
+  fi
+done
+if [ -z "$target" ]; then
+  echo "gh: command not found" >&2
+  exit 127
+fi
+exec "$target" "$@"
+EOF
+    chmod +x "$SHIMS_DIR/gh" 2>/dev/null || true
+  fi
+
+  if [ ! -x "$SHIMS_DIR/git" ]; then
+    cat <<'EOF' >"$SHIMS_DIR/git"
+#!/usr/bin/env bash
+if [ -n "${FM_AGY2_REAL_BUS:-}" ]; then
+  export DBUS_SESSION_BUS_ADDRESS="$FM_AGY2_REAL_BUS"
+fi
+canonical_self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$0")
+target=""
+for cmd in $(which -a git 2>/dev/null); do
+  real_cmd=$(readlink -f "$cmd" 2>/dev/null || printf '%s' "$cmd")
+  if [ "$real_cmd" != "$canonical_self" ] && [ -x "$cmd" ]; then
+    target="$cmd"
+    break
+  fi
+done
+if [ -z "$target" ]; then
+  echo "git: command not found" >&2
+  exit 127
+fi
+exec "$target" "$@"
+EOF
+    chmod +x "$SHIMS_DIR/git" 2>/dev/null || true
+  fi
+}
+
 bring_up() {
   require_cmd dbus-daemon "the private session bus"
   require_cmd dbus-send "D-Bus health checks"
@@ -298,6 +351,7 @@ bring_up() {
   ensure_keyring
   assert_store_isolated
   assert_identity
+  ensure_shims
   exec 9>&-
 }
 
@@ -410,6 +464,7 @@ case "${1:-}" in
     bring_up
     exec env DBUS_SESSION_BUS_ADDRESS="$BUS_ADDR" \
       FM_AGY2_HARNESS=agy2 FM_AGY2_REAL_BUS="$REAL_BUS" FM_AGY2_ROOT="$ROOT" \
+      PATH="$SHIMS_DIR:$PATH" \
       "$AGY_BIN" --gemini_dir="$GEMINI_DIR" "$@"
     ;;
 esac
