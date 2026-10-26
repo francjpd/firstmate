@@ -8,6 +8,7 @@
 #   fm-procevent-deck.sh terminal <result-file>
 #   fm-procevent-deck.sh silent <result-file>
 #   fm-procevent-deck.sh relisten [result-file]
+#   fm-procevent-deck.sh autohandle <source-id> <sequence> <result-file>
 #   fm-procevent-deck.sh answers <result-file>
 #   fm-procevent-deck.sh read <result-file>
 #   fm-procevent-deck.sh source-id
@@ -23,6 +24,7 @@
 # terminal   Exit 1 always: deck-axi ingress is persistent and stays armed.
 # silent     Exit 0 when captured output is empty (idle timeout), exit 1 when content present.
 # relisten   Exit 0 always: runner maintains continuous listening.
+# autohandle Exit 0 always: acknowledge capture for relisten loop continuation.
 # answers    Extract structured captain decision key/value if result is a grill round submission.
 # read       Print human-readable structured presentation of captured result line.
 # source-id  Print the canonical source id: deck-ingress.
@@ -55,8 +57,8 @@ try:
             print("empty")
             sys.exit(0)
         data = json.loads(line)
-        msg_id = data.get("id", "")
-        mode = data.get("mode", "")
+        msg_id = str(data.get("id") or data.get("msg_id") or "")
+        mode = str(data.get("mode") or "")
         if msg_id.startswith("submit_"):
             print("submit")
         elif msg_id.startswith("task_"):
@@ -94,6 +96,10 @@ cmd_relisten() {
   return 0
 }
 
+cmd_autohandle() {
+  return 0
+}
+
 cmd_answers() {
   local file=${1-}
   [ -n "$file" ] && [ -f "$file" ] || exit 1
@@ -107,7 +113,7 @@ try:
         if not line:
             sys.exit(1)
         data = json.loads(line)
-        session_file = data.get("sessionFile")
+        session_file = data.get("sessionFile") or data.get("session_file")
         if session_file and os.path.exists(session_file):
             with open(session_file, "r", encoding="utf-8") as sf:
                 sdata = json.load(sf)
@@ -133,13 +139,13 @@ path = sys.argv[1]
 try:
     with open(path, "r", encoding="utf-8") as f:
         data = json.loads(f.readline().strip())
-    msg_id = data.get("id", "-")
-    mode = data.get("mode", "-")
-    role = data.get("role", "-")
-    round_num = data.get("round", "-")
-    deck_id = data.get("deckId", "-")
-    text = data.get("text", "-")
-    ts = data.get("ts", "-")
+    msg_id = data.get("id") or data.get("msg_id") or "-"
+    mode = data.get("mode") or "-"
+    role = data.get("role") or "-"
+    round_num = data.get("round") if data.get("round") is not None else "-"
+    deck_id = data.get("deckId") or data.get("deck_id") or "-"
+    text = data.get("text") if data.get("text") is not None else "-"
+    ts = data.get("ts") if data.get("ts") is not None else "-"
     print("--- DECK INGRESS EVENT ---")
     print("ID:        " + str(msg_id))
     print("Mode:      " + str(mode))
@@ -193,13 +199,14 @@ case "${1-}" in
   terminal)    shift; cmd_terminal "$@" ;;
   silent)      shift; cmd_silent "$@" ;;
   relisten)    shift; cmd_relisten "$@" ;;
+  autohandle)  shift; cmd_autohandle "$@" ;;
   answers)     shift; cmd_answers "$@" ;;
   read)        shift; cmd_read "$@" ;;
   poll)        shift; cmd_poll "$@" ;;
   arm)         shift; cmd_arm "$@" ;;
   retire)      shift; cmd_retire "$@" ;;
   *)
-    printf 'Usage: fm-procevent-deck.sh {arm|poll|classify|terminal|silent|relisten|answers|read|source-id|retire}\n' >&2
+    printf 'Usage: fm-procevent-deck.sh {arm|poll|classify|terminal|silent|relisten|autohandle|answers|read|source-id|retire}\n' >&2
     exit 2
     ;;
 esac

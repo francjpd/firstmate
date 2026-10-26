@@ -891,7 +891,7 @@ It runs only on the tmux and Herdr backends; a zellij, cmux, or orca launch is r
 Its busy-state wiring is a tracked mod loaded per process with `--mod`, so no user or project Command Code settings are edited; [its adapter reference](../.agents/skills/harness-adapters/references/harness/commandcode.md) owns the launch facts and [Command Code verification](verification/commandcode.md) owns the live evidence.
 
 agy2 is the same Antigravity CLI running as a second Antigravity account on the same Unix user, launched by `bin/fm-agy2.sh` as a standalone `agy2` command.
-It is verified for crewmate and scout launches only; [its adapter reference](../.agents/skills/harness-adapters/references/harness/agy2.md) owns the operating contract and [verification record](verification/agy2.md) owns the live evidence.
+It is verified for crewmate, scout, and secondmate launches; [its adapter reference](../.agents/skills/harness-adapters/references/harness/agy2.md) owns the operating contract and [verification record](verification/agy2.md) owns the live evidence.
 Its identity comes from a private Secret Service store, so it never reads, writes, or re-logs-in the account `agy` uses, and a spawn is refused while that store holds no distinct identity.
 
 Polytoken is verified for crewmate and scout launches only; [its adapter reference](../.agents/skills/harness-adapters/references/harness/polytoken.md) owns the operating contract and [verification record](verification/polytoken.md) owns the live evidence.

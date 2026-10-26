@@ -2,7 +2,7 @@
 # tests/fm-deck-ingress.test.sh - tests for fm-deck-ingress.sh
 set -euo pipefail
 
-echo "1..8"
+echo "1..12"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_DIR="$(mktemp -d /tmp/fm-ingress-test-XXXXXX)"
@@ -94,5 +94,51 @@ if echo "$wait_out" | grep -q "wait test"; then
   echo "ok 8 - wait command successfully blocks and captures incoming message"
 else
   echo "not ok 8 - wait command failed to capture message: $wait_out"
+  exit 1
+fi
+
+# Test 9: poll updates message status in chat file when envelope uses snake_case chat_file
+echo '{"id":"m_status_snake","role":"captain","text":"snake status test","status":"sent"}' > "$TEST_CHAT_FILE"
+echo "{\"id\":\"m_status_snake\",\"chat_file\":\"$TEST_CHAT_FILE\",\"role\":\"captain\",\"text\":\"snake status test\"}" >> "$DECK_INGRESS_FILE"
+"$ROOT/bin/fm-deck-ingress.sh" poll >/dev/null
+
+if grep -q '"status": "received"' "$TEST_CHAT_FILE"; then
+  echo "ok 9 - poll marks captain message status as received with snake_case chat_file"
+else
+  echo "not ok 9 - chat file status not updated with snake_case chat_file: $(cat "$TEST_CHAT_FILE")"
+  exit 1
+fi
+
+# Test 10: fm-procevent-deck.sh classify handles null id and null mode gracefully
+test_res_null="$TEST_DIR/null_event.json"
+echo '{"id":null,"mode":null,"text":"plain message"}' > "$test_res_null"
+classified=$("$ROOT/bin/fm-procevent-deck.sh" classify "$test_res_null")
+if [ "$classified" = "message" ]; then
+  echo "ok 10 - classify handles null id and null mode gracefully defaulting to message"
+else
+  echo "not ok 10 - classify returned unexpected: $classified"
+  exit 1
+fi
+
+# Test 11: fm-procevent-deck.sh answers and read accept snake_case session_file and deck_id
+test_session="$TEST_DIR/session.json"
+echo '{"settled":[{"id":"q1","chosen":"optA","title":"Option A"}]}' > "$test_session"
+test_submit="$TEST_DIR/submit_event.json"
+echo "{\"id\":\"submit_1\",\"session_file\":\"$test_session\",\"deck_id\":\"deck_42\",\"mode\":\"submit\"}" > "$test_submit"
+
+answers_out=$("$ROOT/bin/fm-procevent-deck.sh" answers "$test_submit")
+read_out=$("$ROOT/bin/fm-procevent-deck.sh" read "$test_submit")
+if echo "$answers_out" | grep -q "q1" && echo "$read_out" | grep -q "Deck ID:   deck_42"; then
+  echo "ok 11 - answers and read accept snake_case session_file and deck_id"
+else
+  echo "not ok 11 - answers/read failed on snake_case keys: answers='$answers_out' read='$read_out'"
+  exit 1
+fi
+
+# Test 12: fm-procevent-deck.sh autohandle returns 0 for relisten loop continuation
+if "$ROOT/bin/fm-procevent-deck.sh" autohandle "deck-ingress" "1" "$test_submit"; then
+  echo "ok 12 - autohandle returns 0 for continuous relisten"
+else
+  echo "not ok 12 - autohandle failed"
   exit 1
 fi
