@@ -206,7 +206,7 @@ repair_line() {
       printf '%s%s\n' "$prefix" 'watcher supervision is owned by the stop-hook park; inspect the hook registration and watcher startup path before ending the turn.'
       ;;
     agy|agy2)
-      printf '%s%s\n' "$prefix" 'watcher supervision needs Stop-hook turn-end signalling; inspect the .agents/hooks.json registration and startup status before ending the turn.'
+      printf '%s%s\n' "$prefix" 'watcher supervision needs Stop-hook turn-end signalling and the supervision watchdog daemon; inspect the .agents/hooks.json registration and start the watchdog with bin/fm-supervision-watchdog.sh start before ending the turn.'
       ;;
     *)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision according to the session-start block for this harness; do not use shell &.'
@@ -238,7 +238,7 @@ ordinary_wake_line() {
       printf '%s\n' '- Ordinary wake: the stop-hook park (bin/fm-turnend-guard-cursor.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
       ;;
     agy|agy2)
-      printf '%s\n' '- Ordinary wake: the Stop hook in .agents/hooks.json owns turn-end signalling; drain and handle the wake, and do not arm another cycle yourself.'
+      printf '%s\n' '- Ordinary wake: the persistent supervisor watchdog daemon (bin/fm-supervision-watchdog.sh) alongside the Stop hook in .agents/hooks.json owns turn-end signalling and watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
       ;;
     *)
       printf '%s\n' '- Ordinary wake: follow the continuation in the harness protocol below; do not use shell &.'

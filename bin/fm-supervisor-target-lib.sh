@@ -20,6 +20,21 @@
 # behavior byte-for-byte when run outside both tmux and herdr.
 FM_SUPERVISOR_TARGET_DEFAULT="firstmate:0"
 FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
+FM_SUPERVISOR_TARGET_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# fm_daemon_primary_harness: the captain's primary harness, resolved the one
+# way the repo resolves it. A daemon launched in its own terminal (bin/fm-afk-launch.sh)
+# is outside the captain's process tree, so the launcher names the captain's
+# harness in FM_DAEMON_PRIMARY_HARNESS; detection covers a harness-native daemon.
+# Resolved lazily and memoized: harness detection walks process ancestry, which
+# is too heavy to pay on every source of this library.
+fm_daemon_primary_harness() {
+  if [ -z "${FM_DAEMON_PRIMARY_HARNESS:-}" ]; then
+    FM_DAEMON_PRIMARY_HARNESS=$("$FM_SUPERVISOR_TARGET_LIB_DIR/fm-harness.sh" 2>/dev/null || printf 'unknown')
+    [ -n "$FM_DAEMON_PRIMARY_HARNESS" ] || FM_DAEMON_PRIMARY_HARNESS=unknown
+  fi
+  printf '%s' "$FM_DAEMON_PRIMARY_HARNESS"
+}
 
 # discover_supervisor_target: resolve the pane running firstmate. Priority:
 #   1. FM_SUPERVISOR_TARGET env (explicit override) - uses the exact tmux target
@@ -74,6 +89,12 @@ discover_supervisor_backend() {
     printf 'herdr'
     return 0
   fi
+  case "${FM_SUPERVISOR_TARGET:-}" in
+    w*:p*|*:w*:p*)
+      printf 'herdr'
+      return 0
+      ;;
+  esac
   printf '%s' "$FM_SUPERVISOR_BACKEND_DEFAULT"
   return 1
 }

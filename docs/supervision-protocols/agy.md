@@ -18,6 +18,10 @@ When this session owns supervision or supervises an agy/agy2 worker or agy/agy2 
 6. Teardown removes Firstmate-generated hooks cleanly.
    Teardown strips the `firstmate` block from `.agents/hooks.json`.
    If no other hooks remain, `.agents/hooks.json` is unlinked and empty `.agents/` directories are removed.
-7. Autonomous primary session rewake remains an external gap.
-   While worker and secondmate turn ends are proven, the agy CLI does not currently offer an exit-2 rewake mechanism or in-process background watcher extension.
-   Stand-alone sessions require external wake delivery via tmux send-keys or background daemon injection.
+7. Autonomous primary session rewake via supervision watchdog daemon and doorbells.
+   To eliminate dead supervision episodes when the watcher exits on actionable wakes, run the persistent supervisor watchdog daemon:
+   `bin/fm-supervision-watchdog.sh start` (or `bin/fm-watchdog.sh start`).
+   The watchdog daemon keeps `bin/fm-watch.sh` continuously armed and self-healing. When actionable wakes arrive, the watcher terminates and the watchdog daemon:
+   a. Immediately rings the primary supervisor pane doorbell (e.g. `w44:p1` or tmux pane via `bin/fm-procevent-doorbell.sh` / terminal injection).
+   b. Immediately re-arms a fresh watcher cycle so supervision never lapses.
+   Check status with `bin/fm-supervision-watchdog.sh status` and stop with `bin/fm-supervision-watchdog.sh stop`.

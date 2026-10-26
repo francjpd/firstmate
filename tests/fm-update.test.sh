@@ -117,7 +117,8 @@ add_sm() {
 
 # Advance origin by one commit. mode=instr changes the whole instruction surface
 # (AGENTS.md, bin, .agents/skills) plus README; mode=bin changes only bin/, which
-# a running agent re-executes rather than holding; mode=readme changes only README.
+# a running agent re-executes rather than holding; mode=readme changes only README;
+# mode=pi changes only the Pi extension a running Pi session loaded at startup.
 bump_origin() {
   local w=$1 mode=$2
   git -C "$w/seed" pull -q origin main >/dev/null 2>&1 || true
@@ -129,6 +130,10 @@ bump_origin() {
   fi
   if [ "$mode" = bin ]; then
     printf 'echo b-%s\n' "$RANDOM" > "$w/seed/bin/tool.sh"
+  fi
+  if [ "$mode" = pi ]; then
+    mkdir -p "$w/seed/.pi/extensions"
+    printf 'v2\n' > "$w/seed/.pi/extensions/fm-primary-pi-watch.ts"
   fi
   git -C "$w/seed" add -A
   git -C "$w/seed" commit -qm "bump-$mode"
@@ -195,6 +200,27 @@ test_reread_gate_is_instruction_only() {
     "a live mate on the new tip must restart even when no instruction file moved"
   assert_contains "$out" "nudge-secondmates: none" "a restarted secondmate must not also be nudged"
   pass "T3 a non-instruction advance still restarts the live secondmate"
+}
+
+# --- T4: a changed Pi extension says the running Pi session must reload -----
+# A Pi session holds the extension it loaded at startup, so a changed
+# extension is not in that session until it reloads. The landing summary has to
+# say so, or a landing leaves a live session on the previous build's fast-lane
+# contract without saying so.
+test_pi_extension_change_says_reload() {
+  local w out
+  w=$(new_world t4pi)
+  add_sm "$w" sm1
+  bump_origin "$w" pi
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "firstmate still advanced"
+  assert_contains "$out" "reload-pi-session: yes" \
+    "a changed Pi extension must say the running Pi session reloads"
+  assert_contains "$out" "must be reloaded to pick up the new fast-lane consumer marker" \
+    "the reload note must say what the reload picks up"
+  pass "T4 a changed Pi extension says the running Pi session must reload"
 }
 
 # --- T3b: a bin/-only advance restarts too ---------------------------------
@@ -659,6 +685,7 @@ test_integration_branch_unsafe_states() {
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_bin_only_advance_restarts
+test_pi_extension_change_says_reload
 test_unprovable_runtime_gets_fallback_nudge
 test_dead_secondmate_gets_no_action
 test_legacy_remote_advance_restarts

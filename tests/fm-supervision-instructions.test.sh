@@ -314,9 +314,13 @@ test_agy_supervision_protocol() {
     ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
     assert_contains "$ordinary" "Stop hook in .agents/hooks.json owns turn-end signalling" \
       "$h ordinary wake line missing Stop hook reference"
+    assert_contains "$ordinary" "bin/fm-supervision-watchdog.sh" \
+      "$h ordinary wake line missing watchdog daemon reference"
     repair=$("$RENDER" --harness "$h" --repair-line)
     assert_contains "$repair" "Stop-hook turn-end signalling" \
       "$h repair line missing Stop-hook reference"
+    assert_contains "$repair" "bin/fm-supervision-watchdog.sh" \
+      "$h repair line missing watchdog daemon reference"
   done
   pass "agy and agy2 render the Stop-hook turn-end signalling supervision protocol"
 }

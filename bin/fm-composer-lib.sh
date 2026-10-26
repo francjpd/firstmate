@@ -868,7 +868,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_PI_GLYPH=
   FM_COMPOSER_SCAN_LEFTBAR_GLYPH_ROW=-1
   FM_COMPOSER_SCAN_LEFTBAR_GLYPH=
-  local leftbar_start=-1 pi_open=-1 pi_lines=0 pi_max
+  local leftbar_start=-1 pi_open=-1 pi_lines=0 pi_max pi_furniture_only=1
   local probe row_glyph row_glyph_row
   local box_glyph_row=-1 box_glyph='' pi_glyph_row=-1 pi_glyph=''
   pi_max=$FM_COMPOSER_PI_MAX_LINES
@@ -917,24 +917,30 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
     if _fm_composer_pi_separator_row "$trimmed"; then
       FM_COMPOSER_SCAN_PI_LAST_SEPARATOR=$row
       if [ "$pi_open" -ge 0 ]; then
-        FM_COMPOSER_SCAN_PI_PAIR_FOUND=1
-        FM_COMPOSER_SCAN_PI_OPEN=$pi_open
-        FM_COMPOSER_SCAN_PI_CLOSE=$row
-        if [ "$pi_lines" -le "$pi_max" ]; then
-          FM_COMPOSER_SCAN_PI_PAIR_VALID=1
-        else
-          FM_COMPOSER_SCAN_PI_PAIR_VALID=0
+        if [ "$pi_furniture_only" -eq 0 ] || [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" -eq 0 ]; then
+          FM_COMPOSER_SCAN_PI_PAIR_FOUND=1
+          FM_COMPOSER_SCAN_PI_OPEN=$pi_open
+          FM_COMPOSER_SCAN_PI_CLOSE=$row
+          if [ "$pi_lines" -le "$pi_max" ]; then
+            FM_COMPOSER_SCAN_PI_PAIR_VALID=1
+          else
+            FM_COMPOSER_SCAN_PI_PAIR_VALID=0
+          fi
+          FM_COMPOSER_SCAN_PI_GLYPH_ROW=$pi_glyph_row
+          FM_COMPOSER_SCAN_PI_GLYPH=$pi_glyph
         fi
-        FM_COMPOSER_SCAN_PI_GLYPH_ROW=$pi_glyph_row
-        FM_COMPOSER_SCAN_PI_GLYPH=$pi_glyph
       fi
       pi_open=$row
       pi_lines=0
       pi_glyph_row=-1
       pi_glyph=''
+      pi_furniture_only=1
     else
       if [ "$pi_open" -ge 0 ]; then
         pi_lines=$((pi_lines + 1))
+        if ! _fm_composer_row_is_agy_task_furniture "$trimmed"; then
+          pi_furniture_only=0
+        fi
         if [ "$pi_glyph_row" -lt 0 ] && [ "$row_glyph_row" -ge 0 ]; then
           pi_glyph_row=$row_glyph_row
           pi_glyph=$row_glyph
@@ -1291,6 +1297,15 @@ _fm_composer_row_is_braille_furniture() {  # <row>
   rest=$(printf '%s\n' "$row" | fm_composer_strip_braille)
   fm_composer_normalize_trim_var rest
   [ -z "$rest" ]
+}
+
+# _fm_composer_row_is_agy_task_furniture: 0 when the trimmed row is an agy CLI
+# background task status line (e.g. `● [HH:MM:SS] command running`).
+_fm_composer_row_is_agy_task_furniture() {  # <trimmed-row>
+  case "$1" in
+    '● ['*|'• ['*|'⣾'*|'⣽'*|'⣻'*|'⢿'*|'⡿'*|'⣟'*|'⣯'*|'⣷'*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # _fm_composer_bare_row_strip_furniture_var: on a bare agent-glyph row, reduce
@@ -2155,13 +2170,19 @@ fm_composer_queued_enter_verdict() {  # <composer-state> <busy|idle|unknown>
   fi
 }
 
-_fm_composer_classify_pi_rows() {  # <screen> <styled>
-  local screen=$1 styled=$2 row raw content
+_fm_composer_classify_pi_rows() {  # <screen> <styled> [agent]
+  local screen=$1 styled=$2 agent=${3:-} row raw content
   row=$((FM_COMPOSER_SCAN_PI_OPEN + 1))
   while [ "$row" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; do
     raw=$(_fm_composer_screen_row "$row" "$screen")
     content=$(_fm_composer_row_content "$raw" "$styled")
     fm_composer_normalize_trim_var content
+    if [ "$agent" = agy ] || [ "$agent" = agy2 ]; then
+      case "$content" in
+        '>'*) content="${content#>}" ;;
+      esac
+      fm_composer_normalize_trim_var content
+    fi
     if [ -n "$content" ]; then
       printf 'pending'
       return 0
@@ -2224,13 +2245,14 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
   # conjunction: an idle polytoken proves an empty composer, and a working
   # polytoken keeps the strict unknown - its composer really is empty
   # mid-turn (Enter queues, verified live), but the unknown keeps the
-  # busy-queue conversion honest through the submit cores.
-  if { [ "$agent" != pi ] && [ "$agent" != polytoken ]; } \
+  # busy-queue conversion honest through the submit cores. agy and agy2 are
+  # verified owners of the separated prompt shape with a leading `>` prompt glyph.
+  if { [ "$agent" != pi ] && [ "$agent" != polytoken ] && [ "$agent" != agy ] && [ "$agent" != agy2 ]; } \
     || [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ]; then
     printf 'unknown'
     return 0
   fi
-  state=$(_fm_composer_classify_pi_rows "$screen" "$styled")
+  state=$(_fm_composer_classify_pi_rows "$screen" "$styled" "$agent")
   if [ "$state" = pending ]; then
     printf 'pending'
     return 0
