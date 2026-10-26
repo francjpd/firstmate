@@ -1,0 +1,22 @@
+=== DECK INGRESS AND PROCEVENT E2E TRANSCRIPT ===
+--- 1. Chat file after poll (status: received) ---
+{"id": "msg_casing_1", "role": "captain", "text": "Do we launch the expedition?", "status": "received"}
+
+--- 2. Extracted Answers from snake_case session_file ---
+decision_go	aye	Launch expedition
+
+--- 3. Event Presentation Read ---
+--- DECK INGRESS EVENT ---
+ID:        submit_decision
+Mode:      submit
+Role:      -
+Round:     1
+Deck ID:   deck_main
+Text:      -
+Timestamp: -
+--------------------------
+
+--- 4. Chat file after Firstmate reply (status: answered) ---
+{"id": "msg_casing_1", "role": "captain", "text": "Do we launch the expedition?", "status": "answered"}
+{"id": "m_1793023700146", "role": "firstmate", "text": "Aye captain, course is set.", "ts": 1793023700146}
+===============================================

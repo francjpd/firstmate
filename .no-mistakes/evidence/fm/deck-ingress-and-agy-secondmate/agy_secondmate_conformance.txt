@@ -1,0 +1,19 @@
+=== AGY SECONDMATE CONFORMANCE & BOUNDARY TRANSCRIPT ===
+--- 1. Control plane harness support query ---
+agy secondmate:    supported
+agy2 secondmate:   supported
+gemini secondmate: unsupported
+
+--- 2. Agy secondmate workspace trust registration in settings.json ---
+{
+  "trustedWorkspaces": [
+    "/tmp/fm-lab.ypzijv/secondmate-home"
+  ]
+}
+
+--- 3. Adversarial guard: fm-spawn refusal for unsupported harness ---
+Return code: 1
+Output:
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.ypzijv
+error: gemini is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates.
+========================================================
