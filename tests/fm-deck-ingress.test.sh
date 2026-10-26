@@ -2,7 +2,7 @@
 # tests/fm-deck-ingress.test.sh - tests for fm-deck-ingress.sh
 set -euo pipefail
 
-echo "1..12"
+echo "1..14"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_DIR="$(mktemp -d /tmp/fm-ingress-test-XXXXXX)"
@@ -140,5 +140,25 @@ if "$ROOT/bin/fm-procevent-deck.sh" autohandle "deck-ingress" "1" "$test_submit"
   echo "ok 12 - autohandle returns 0 for continuous relisten"
 else
   echo "not ok 12 - autohandle failed"
+  exit 1
+fi
+
+# Test 13: fm-procevent-deck.sh classify identifies task_start events
+test_task_start="$TEST_DIR/task_start.json"
+echo '{"id":"task_start_123","action":"start","taskId":"my-cool-task","repo":"firstmate","kind":"ship","mode":"backlog"}' > "$test_task_start"
+classified_start=$("$ROOT/bin/fm-procevent-deck.sh" classify "$test_task_start")
+if [ "$classified_start" = "task_start" ]; then
+  echo "ok 13 - classify identifies task_start events"
+else
+  echo "not ok 13 - classify returned unexpected for task start: $classified_start"
+  exit 1
+fi
+
+# Test 14: fm-procevent-deck.sh read outputs structured Action and Task ID
+read_task_out=$("$ROOT/bin/fm-procevent-deck.sh" read "$test_task_start")
+if echo "$read_task_out" | grep -q "Action:    start" && echo "$read_task_out" | grep -q "Task ID:   my-cool-task"; then
+  echo "ok 14 - read outputs structured Action and Task ID for task dispatch"
+else
+  echo "not ok 14 - read failed on task start event: '$read_task_out'"
   exit 1
 fi

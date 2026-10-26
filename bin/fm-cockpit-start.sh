@@ -114,6 +114,11 @@ else
   fi
 fi
 
+if [ ! -d "$PROJECT_DIR" ]; then
+  echo "error: project directory not found at $PROJECT_DIR" >&2
+  exit 1
+fi
+
 # 5. Scaffold data/<task-id>/brief.md if missing
 BRIEF_DIR="$DATA/$TASK_ID"
 BRIEF_FILE="$BRIEF_DIR/brief.md"

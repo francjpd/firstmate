@@ -18,6 +18,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export FM_HOME="${FM_HOME:-$_ROOT}"
 
 detect_multiplexer() {
   if { [ -n "${HERDR_PANE_ID:-}" ] || [ -n "${HERDR_ENV:-}" ]; } && command -v herdr >/dev/null 2>&1; then
@@ -149,7 +150,7 @@ case "$MUX" in
       exit 1
     fi
 
-    herdr pane run "$NEW_PANE" deck-axi "${ARGS[@]}"
+    herdr pane run "$NEW_PANE" env FM_HOME="$FM_HOME" deck-axi "${ARGS[@]}"
     if [ "$ZOOM_MODAL" -eq 1 ]; then
       herdr pane zoom --pane "$NEW_PANE" --on >/dev/null 2>&1 || true
     fi
@@ -161,7 +162,7 @@ case "$MUX" in
     if [ "$DIRECTION" = "down" ]; then
       TMUX_FLAG="-v"
     fi
-    tmux split-window "$TMUX_FLAG" deck-axi "${ARGS[@]}"
+    tmux split-window "$TMUX_FLAG" env FM_HOME="$FM_HOME" deck-axi "${ARGS[@]}"
     if [ "$ZOOM_MODAL" -eq 1 ]; then
       tmux resize-pane -Z >/dev/null 2>&1 || true
     fi
@@ -169,7 +170,7 @@ case "$MUX" in
     ;;
 
   zellij)
-    zellij action new-pane --direction "$DIRECTION" -- deck-axi "${ARGS[@]}"
+    zellij action new-pane --direction "$DIRECTION" -- env FM_HOME="$FM_HOME" deck-axi "${ARGS[@]}"
     if [ "$ZOOM_MODAL" -eq 1 ]; then
       zellij action toggle-fullscreen >/dev/null 2>&1 || true
     fi

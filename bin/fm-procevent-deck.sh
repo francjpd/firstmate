@@ -58,8 +58,13 @@ try:
             sys.exit(0)
         data = json.loads(line)
         msg_id = str(data.get("id") or data.get("msg_id") or "")
+        action = str(data.get("action") or "")
         mode = str(data.get("mode") or "")
-        if msg_id.startswith("submit_"):
+        if action == "start" or msg_id.startswith("task_start"):
+            print("task_start")
+        elif action == "kill" or msg_id.startswith("task_kill"):
+            print("task_kill")
+        elif msg_id.startswith("submit_"):
             print("submit")
         elif msg_id.startswith("task_"):
             print("task_action")
@@ -97,6 +102,49 @@ cmd_relisten() {
 }
 
 cmd_autohandle() {
+  local source_id=${1-}
+  local seq=${2-}
+  local file=${3-}
+
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+
+  python3 -c '
+import sys, json, os, subprocess
+
+path = sys.argv[1]
+script_dir = sys.argv[2]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        line = f.readline().strip()
+        if not line:
+            sys.exit(0)
+        data = json.loads(line)
+
+    action = str(data.get("action") or "")
+    msg_id = str(data.get("id") or data.get("msg_id") or "")
+    task_id = data.get("taskId") or data.get("taskSlug")
+    session_file = data.get("sessionFile") or data.get("session_file")
+
+    if not task_id and (action == "start" or msg_id.startswith("task_start")):
+        text = data.get("text", "")
+        parts = text.split()
+        if len(parts) >= 4 and parts[2] == "[START]":
+            task_id = parts[3]
+
+    if (action == "start" or msg_id.startswith("task_start")) and task_id:
+        start_script = os.path.join(script_dir, "fm-cockpit-start.sh")
+        if os.path.exists(start_script):
+            env = dict(os.environ)
+            if session_file and os.path.isabs(session_file):
+                home_candidate = os.path.dirname(os.path.dirname(session_file))
+                if os.path.exists(os.path.join(home_candidate, "data")):
+                    env["FM_HOME"] = home_candidate
+                    env["FM_DATA_OVERRIDE"] = os.path.dirname(session_file)
+            subprocess.Popen([start_script, task_id], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+except Exception:
+    pass
+' "$file" "$SCRIPT_DIR" 2>/dev/null || true
+
   return 0
 }
 
@@ -140,6 +188,8 @@ try:
     with open(path, "r", encoding="utf-8") as f:
         data = json.loads(f.readline().strip())
     msg_id = data.get("id") or data.get("msg_id") or "-"
+    action = data.get("action") or "-"
+    task_id = data.get("taskId") or data.get("taskSlug") or "-"
     mode = data.get("mode") or "-"
     role = data.get("role") or "-"
     round_num = data.get("round") if data.get("round") is not None else "-"
@@ -148,6 +198,8 @@ try:
     ts = data.get("ts") if data.get("ts") is not None else "-"
     print("--- DECK INGRESS EVENT ---")
     print("ID:        " + str(msg_id))
+    print("Action:    " + str(action))
+    print("Task ID:   " + str(task_id))
     print("Mode:      " + str(mode))
     print("Role:      " + str(role))
     print("Round:     " + str(round_num))
