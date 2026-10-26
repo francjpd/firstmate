@@ -1376,7 +1376,7 @@ export default function (pi: ExtensionAPI) {
     return result;
   }
 
-  pi.on?.("before_agent_start", (event, ctx) => {
+  (pi as any).on?.("before_agent_start", (event: any, ctx: any) => {
     // A custom message cannot consume a pending user wake, even with equal text.
     if (!("prompt" in event)) return;
     if (event.messageType !== "user") return;
