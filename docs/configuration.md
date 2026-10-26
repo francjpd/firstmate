@@ -865,7 +865,7 @@ A local standalone-clone home cannot receive a primary-local commit through that
 
 ## Harness support
 
-claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, and omp are empirically verified for crewmate and secondmate launches; gemini is verified for crewmate and scout launches only, and [README requirements](../README.md#requirements) own the set supported for the primary session.
+claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, omp, agy, and agy2 are empirically verified for crewmate and secondmate launches; gemini is verified for crewmate and scout launches only, and [README requirements](../README.md#requirements) own the set supported for the primary session.
 
 ### Harness restrictions and credentials
 
@@ -881,7 +881,7 @@ muse also needs a worker-reachable credential before spawning, and the portable 
 gemini is likewise refused for secondmates because it has no primary supervision protocol; [its adapter reference](../.agents/skills/harness-adapters/references/harness/gemini.md) owns the credential precondition, canonical-launch wiring, and raw-launch limitations.
 rovo is likewise verified for crewmate and scout launches ONLY, refused for a secondmate for the same reason - no turn-end hook and no primary supervision protocol; [`docs/verification/rovo.md`](verification/rovo.md) owns that evidence, including the OAuth token's silent background refresh from a stored refresh token and both tmux and herdr pane liveness (herdr placement is verified live, with a Herdr-side agent-detection gap left open for recovery classification).
 
-agy is likewise verified for crewmate and scout launches ONLY, refused for a secondmate for the same reason - no hook surface and no primary supervision protocol; [`docs/verification/agy.md`](verification/agy.md) owns that evidence, including the spawn-time worktree trust pre-registration through `bin/fm-agy-trust.sh` and Herdr's native agy pane recognition.
+agy and agy2 are verified for crewmate, scout, and secondmate launches, sharing `docs/supervision-protocols/agy.md` and semantic Stop lifecycle hooks in `.agents/hooks.json`; [`docs/verification/agy.md`](verification/agy.md) and [`docs/verification/agy2.md`](verification/agy2.md) own the verification evidence, including spawn-time trust pre-registration through `bin/fm-agy-trust.sh`.
 devin is verified for crewmate and scout launches only; a secondmate is refused because Devin has no verified primary supervision protocol.
 
 Its private worker config disables Claude Code imports (including the captain's hooks) and, unless the home sets `config/keep-ai-trailers` (see "Commit attribution"), Devin commit attribution without editing user or project config; [`fm-devin-config.sh`](../bin/fm-devin-config.sh) owns these enforced settings and [Devin verification](verification/devin.md) owns the live evidence and observed model availability.
@@ -891,7 +891,7 @@ It runs only on the tmux and Herdr backends; a zellij, cmux, or orca launch is r
 Its busy-state wiring is a tracked mod loaded per process with `--mod`, so no user or project Command Code settings are edited; [its adapter reference](../.agents/skills/harness-adapters/references/harness/commandcode.md) owns the launch facts and [Command Code verification](verification/commandcode.md) owns the live evidence.
 
 agy2 is the same Antigravity CLI running as a second Antigravity account on the same Unix user, launched by `bin/fm-agy2.sh` as a standalone `agy2` command.
-It is verified for crewmate and scout launches only; [its adapter reference](../.agents/skills/harness-adapters/references/harness/agy2.md) owns the operating contract and [verification record](verification/agy2.md) owns the live evidence.
+It is verified for crewmate, scout, and secondmate launches; [its adapter reference](../.agents/skills/harness-adapters/references/harness/agy2.md) owns the operating contract and [verification record](verification/agy2.md) owns the live evidence.
 Its identity comes from a private Secret Service store, so it never reads, writes, or re-logs-in the account `agy` uses, and a spawn is refused while that store holds no distinct identity.
 
 Polytoken is verified for crewmate and scout launches only; [its adapter reference](../.agents/skills/harness-adapters/references/harness/polytoken.md) owns the operating contract and [verification record](verification/polytoken.md) owns the live evidence.

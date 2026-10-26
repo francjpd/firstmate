@@ -349,11 +349,19 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/backlog-axi-spec.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/captain-hold-lifecycle.md",
       "audience": "maintainer-architecture"
     },
     {
       "path": "docs/deck-axi-specification.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/deck-central-ingress-bus.md",
       "audience": "maintainer-architecture"
     },
     {
@@ -446,6 +454,10 @@
     },
     {
       "path": "docs/pi-supervision-branch.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/providers-quota-spec.md",
       "audience": "maintainer-architecture"
     },
     {

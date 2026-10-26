@@ -134,8 +134,8 @@ cmd_poll() {
 import sys, json, os, tempfile
 try:
     payload = json.loads(sys.argv[1])
-    chat_file = payload.get("chatFile")
-    msg_id = payload.get("id")
+    chat_file = payload.get("chatFile") or payload.get("chat_file")
+    msg_id = payload.get("id") or payload.get("msg_id")
     if chat_file and os.path.exists(chat_file):
         lines = []
         updated = False
