@@ -171,9 +171,8 @@ test_control_plane_folds_agy2_onto_agy() {
   assert_equals key "$(fm_control_interrupt_transport "$family")" "agy2 must interrupt through the keyplane"
   fm_control_harness_supports_kind agy2 secondmate ||
     fail "agy2 must support secondmate"
-  if fm_control_harness_supports_kind agy secondmate; then
-    fail "agy must never run a secondmate"
-  fi
+  fm_control_harness_supports_kind agy secondmate ||
+    fail "agy must support secondmate"
   pass "fm-control-lib: agy2 rides the agy control tables"
 }
 

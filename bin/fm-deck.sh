@@ -129,6 +129,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
+# Ensure procevent background listener is armed so deck-axi interactions wake Firstmate
+if [ -x "$SCRIPT_DIR/fm-procevent-deck.sh" ]; then
+  "$SCRIPT_DIR/fm-procevent-deck.sh" arm >/dev/null 2>&1 || true
+fi
+
 case "$MUX" in
   herdr)
     TARGET_PANE="${HERDR_PANE_ID:-}"

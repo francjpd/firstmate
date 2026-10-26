@@ -1,6 +1,6 @@
 Mode: agy / agy2 Stop-hook-owned turn-end signalling.
 
-When this session owns supervision or supervises an agy/agy2 worker or agy2 secondmate and away mode is not active:
+When this session owns supervision or supervises an agy/agy2 worker or agy/agy2 secondmate and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
    After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
 2. Worker and secondmate turn ends are signalled through the `Stop` lifecycle hook in `.agents/hooks.json`.
@@ -14,7 +14,7 @@ When this session owns supervision or supervises an agy/agy2 worker or agy2 seco
    `bin/fm-send.sh` delivers typed text to the target pane with an agy2-tuned retry budget.
 5. Workspace trust is pre-registered during spawn.
    For worktrees, `bin/fm-agy-trust.sh` pre-approves the worktree in the harness state store.
-   For an agy2 secondmate, `bin/fm-agy-trust.sh --secondmate-home <home> <id>` pre-registers the isolated secondmate home in agy2's store without touching the captain's fleet config or keyring.
+   For an agy or agy2 secondmate, `bin/fm-agy-trust.sh --secondmate-home <home> <id>` pre-registers the isolated secondmate home in the harness store without touching the captain's fleet config or keyring.
 6. Teardown removes Firstmate-generated hooks cleanly.
    Teardown strips the `firstmate` block from `.agents/hooks.json`.
    If no other hooks remain, `.agents/hooks.json` is unlinked and empty `.agents/` directories are removed.

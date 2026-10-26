@@ -2715,7 +2715,7 @@ case "$ARG3" in
   ;;
 esac
 
-# muse, gemini, agy, devin, commandcode, and polytoken are verified as CREWMATE/SCOUT adapters only. A secondmate is
+# muse, gemini, devin, commandcode, and polytoken are verified as CREWMATE/SCOUT adapters only. A secondmate is
 # a firstmate instance, so it needs a primary supervision protocol.
 # gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
 # and this task verified only crewmate-side launch, busy state, interrupt, and
@@ -2725,15 +2725,14 @@ esac
 # asyncRewake handlers that firstmate's primary turn-end supervision is built on
 # (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
 # secondmate whose supervision cycle could never be armed.
-# agy has none either: it exposes no hook surface for primary supervision and
-# docs/supervision-protocols/ carries no agy wake protocol (agy 1.2.0).
+# agy and agy2 share docs/supervision-protocols/agy.md and semantic Stop hooks.
 # devin has none either: only its worker lifecycle hooks are verified, and
 # docs/supervision-protocols/ carries no devin wake protocol (devin 3000.11.1).
 # commandcode has none either: only its worker busy mod is verified, and
 # docs/supervision-protocols/ carries no Command Code wake protocol (1.74.1).
 # polytoken has none either: only the crewmate/scout lifecycle is verified;
 # docs/supervision-protocols/ carries no polytoken primary wake protocol.
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ] || [ "$HARNESS" = devin ] || [ "$HARNESS" = commandcode ] || [ "$HARNESS" = polytoken ]; }; then
+if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = devin ] || [ "$HARNESS" = commandcode ] || [ "$HARNESS" = polytoken ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -5231,7 +5230,13 @@ claude*)
   fi
   ;;
 agy)
-  if [ "$KIND" != secondmate ]; then
+  if [ "$KIND" = secondmate ]; then
+    if "$FM_ROOT/bin/fm-agy-trust.sh" --secondmate-home "$PROJ_ABS" "$ID" >/dev/null; then
+      AGY_TRUST_PREREGISTERED=1
+    else
+      echo "warning: could not pre-register agy workspace trust for $PROJ_ABS; the launch will answer the folder-trust dialog in window $T instead" >&2
+    fi
+  else
     if "$FM_ROOT/bin/fm-agy-trust.sh" "$WT" "$PROJ_ABS" >/dev/null; then
       AGY_TRUST_PREREGISTERED=1
     else
