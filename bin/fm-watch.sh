@@ -2203,6 +2203,22 @@ procevent_surfaced_marker() {  # <queue-key>
   fm_procevent_surfaced_marker "$STATE" "$1"
 }
 
+# procevent_fast_lane_live_marker: the fast lane's live record for a queue
+# key. While it exists the fast lane is handling that event, so the slow
+# lane's picker skips the key instead of announcing the same event again.
+procevent_fast_lane_live_marker() {  # <queue-key>
+  local key=$1 id seq
+  case "$key" in
+    procevent:*:*) ;;
+    *) return 0 ;;
+  esac
+  id=${key#procevent:}
+  seq=${id##*:}
+  id=${id%:*}
+  case "$seq" in ''|*[!0-9]*) return 0 ;; esac
+  fm_procevent_fast_lane_live_marker "$STATE" "procevent:$id:$seq"
+}
+
 procevent_surface_after_output() {
   local output_status=$1 key marker tmp status=0
   if [ "$output_status" -eq 0 ]; then
@@ -2213,6 +2229,9 @@ procevent_surface_after_output() {
         rm -f -- "$tmp"
         status=1
       fi
+      # The slow lane announced this event, so the fast lane's pending ring
+      # file for it must not deliver the same event a second time.
+      fm_procevent_retire_ring_file "$STATE" "$key"
     done
   fi
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
@@ -2227,6 +2246,16 @@ procevent_surface_queued() {
   while IFS= read -r key; do
     case "$key" in procevent:*) ;; *) continue ;; esac
     [ -e "$(procevent_surfaced_marker "$key")" ] && continue
+    # The fast lane's live record says the fast lane is handling this event
+    # right now, so the slow lane leaves it alone: one event is announced
+    # once. The record is cleared when the fast lane's delivery settles, so
+    # an event whose fast-lane delivery never completed is taken over here.
+    # A consumer that is no longer alive can announce nothing, so its record
+    # must not silence this event either.
+    if [ -e "$(procevent_fast_lane_live_marker "$key")" ] \
+      && fm_procevent_fast_lane_consumer_live "$STATE"; then
+      continue
+    fi
     PROCEVENT_SURFACED="$PROCEVENT_SURFACED $key"
     # A stranded source or one whose launch never proved itself is the opposite
     # of a captured result: nothing is collecting for it. Headlining either as

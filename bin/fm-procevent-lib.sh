@@ -29,6 +29,16 @@
 # runner as at-least-once, no-loss, or lossless, and never claim generic
 # exactly-once effects from the handled acknowledgement alone.
 
+_FM_PROCEVENT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The supervisor pane and the primary harness have one owner each:
+# bin/fm-supervisor-target-lib.sh resolves the pane the away-mode daemon uses
+# and owns the daemon's harness resolution. A deployment that ships this
+# library without them simply has no pane consumer.
+if [ -f "$_FM_PROCEVENT_LIB_DIR/fm-supervisor-target-lib.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$_FM_PROCEVENT_LIB_DIR/fm-supervisor-target-lib.sh"
+fi
+
 # Machine-wide claim root. Homes can share one underlying source store, so the
 # "one owner per canonical source" rule cannot live inside a single home.
 fm_procevent_claim_root() {
@@ -1294,14 +1304,14 @@ fm_procevent_mark_handled() {
   fi
   if ln "$tmp" "$marker" 2>/dev/null; then
     rm -f -- "$tmp"
-    rm -f -- "$(fm_procevent_ring_marker "$state" "procevent:$id:$seq")" \
-             "$(fm_procevent_surfaced_marker "$state" "procevent:$id:$seq")" 2>/dev/null || true
+    rm -f -- "$(fm_procevent_ring_marker "$state" "procevent:$id:$seq")" 2>/dev/null || true
+    rm -f -- "$(fm_procevent_fast_lane_live_marker "$state" "procevent:$id:$seq")" 2>/dev/null || true
     return 0
   fi
   rm -f -- "$tmp"
   if [ -f "$marker" ] && [ ! -L "$marker" ]; then
-    rm -f -- "$(fm_procevent_ring_marker "$state" "procevent:$id:$seq")" \
-             "$(fm_procevent_surfaced_marker "$state" "procevent:$id:$seq")" 2>/dev/null || true
+    rm -f -- "$(fm_procevent_ring_marker "$state" "procevent:$id:$seq")" 2>/dev/null || true
+    rm -f -- "$(fm_procevent_fast_lane_live_marker "$state" "procevent:$id:$seq")" 2>/dev/null || true
     return 1
   fi
   return 2
@@ -1370,8 +1380,8 @@ fm_procevent_result_extension_load() {  # <result-path>
   fm_procevent_digest_valid "$FM_PROCEVENT_RESULT_EXTENSION_BINDING_DIGEST" || return 2
 }
 
-# Canonical marker path for a procevent fast-lane ring, holding the epoch
-# of the last ring announcement so rapid reconciles do not burst rings.
+# Canonical marker path for a procevent fast-lane ring. It is the per-event
+# record of the fast-lane announcement, so one event is announced once.
 fm_procevent_ring_marker() {  # <state> <queue-key>
   local state=$1 key=$2
   printf '%s/.ring-procevent-%s' "$state" "$(printf '%s' "$key" | LC_ALL=C od -An -tx1 | tr -d ' \n')"
@@ -1390,80 +1400,382 @@ fm_procevent_fast_lane_ring_dir() {  # <state>
   printf '%s/fast-lane\n' "$1"
 }
 
+# The fast-lane consumer's liveness marker. The consumer owns its ring
+# directory and writes this marker while a session is live, so the fast lane
+# can tell a watching consumer from an idle ring directory: only a live
+# consumer can be handling the event the fast lane rings.
+fm_procevent_fast_lane_consumer_marker() {  # <state>
+  printf '%s/.consumer\n' "$(fm_procevent_fast_lane_ring_dir "$1")"
+}
+
+# fm_procevent_process_start_epoch <pid>
+# The process's start time in epoch seconds, where the platform can prove it.
+# The /proc start time counts from boot, so the boot time converts it to the
+# same clock a file's mtime uses.
+fm_procevent_process_start_epoch() {  # <pid>
+  local pid=$1 proc_root stat_line btime ticks hz
+  local -a stat_fields
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  [ -r "$proc_root/$pid/stat" ] || return 1
+  stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+  read -r -a stat_fields <<< "${stat_line##*)}"
+  [ "${#stat_fields[@]}" -ge 20 ] || return 1
+  ticks=${stat_fields[19]}
+  case "$ticks" in ''|*[!0-9]*) return 1 ;; esac
+  btime=$(awk '/^btime /{ print $2; exit }' "$proc_root/stat" 2>/dev/null) || return 1
+  case "$btime" in ''|*[!0-9]*) return 1 ;; esac
+  hz=$(getconf CLK_TCK 2>/dev/null) || return 1
+  case "$hz" in ''|*[!0-9]*|0) return 1 ;; esac
+  printf '%s\n' "$(( btime + ticks / hz ))"
+}
+
+# fm_procevent_fast_lane_consumer_live <state>
+# The consumer is live only while the process its marker names is the same
+# process that wrote the marker. Two marker shapes are accepted, because a
+# session from the build before the identity line is still a consumer:
+#   - pid and identity: the identity must match the live process exactly.
+#     This form never falls back to bare pid liveness.
+#   - pid alone: the marker carries no recorded identity, so only the liveness
+#     half of the proof applies - the repo's own identity primitive, which
+#     rejects a process whose command line is gone, so a dead process that
+#     left a zombie behind is not a consumer. Where the platform can also
+#     prove a process's start time, the marked process must have started no
+#     later than the marker was written, so a pid the kernel handed out again
+#     reads as stale. Where the platform provides neither, the legacy form
+#     rests on liveness alone.
+# A pid the kernel handed out again is not the consumer, and an event such a
+# consumer never took stays with the slow lane.
+fm_procevent_fast_lane_consumer_live() {  # <state>
+  local marker pid recorded current marker_mtime started
+  marker=$(fm_procevent_fast_lane_consumer_marker "$1")
+  [ -f "$marker" ] || return 1
+  pid=$(sed -n '1p' "$marker" 2>/dev/null | tr -d '[:space:]')
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  recorded=$(sed -n '2,$p' "$marker" 2>/dev/null | sed 's/^[[:space:]]*//')
+  if [ -n "$recorded" ]; then
+    current=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+    [ "$current" = "$recorded" ] || return 1
+    return 0
+  fi
+  fm_pid_identity "$pid" >/dev/null 2>&1 || return 1
+  marker_mtime=$(fm_path_mtime "$marker") || return 0
+  started=$(fm_procevent_process_start_epoch "$pid") || return 0
+  [ "$started" -le "$marker_mtime" ] || return 1
+  return 0
+}
+
+# The durable statement that the fast lane is handling one event. The slow
+# lane's picker skips an identity that has one, and the fast lane clears it
+# when its delivery settles, so a delivery that never completed leaves the
+# event to the slow lane.
+fm_procevent_fast_lane_live_marker() {  # <state> <queue-key>
+  local state=$1 key=$2
+  printf '%s/.live-procevent-%s' "$state" "$(printf '%s' "$key" | LC_ALL=C od -An -tx1 | tr -d ' \n')"
+}
+
 # The single owner for the fast-lane ring log path.
 fm_procevent_fast_lane_log() {  # <state>
-  printf '%s\n' "${FM_FAST_LANE_RING_LOG:-${FM_RING_LOG:-$1/.fast-lane-ring.log}}"
+  printf '%s\n' "${FM_FAST_LANE_RING_LOG:-$1/.fast-lane-ring.log}"
+}
+
+# fm_procevent_retire_ring_file <state> <queue-key>
+# Retire the fast lane's ring file for one event. The ring file is the
+# consumer's copy of the event, so once another channel has announced that
+# event the copy must not announce it a second time. Returns 0 only when the
+# copy is gone, so a caller can record what actually happened.
+fm_procevent_retire_ring_file() {  # <state> <queue-key>
+  local state=$1 key=$2 id seq path
+  case "$key" in
+    procevent:*:*) ;;
+    *) return 0 ;;
+  esac
+  id=${key#procevent:}
+  seq=${id##*:}
+  id=${id%:*}
+  [ -n "$id" ] && [ -n "$seq" ] || return 0
+  path="$(fm_procevent_fast_lane_ring_dir "$state")/$id.$seq.ring.json"
+  rm -f -- "$path" 2>/dev/null || return 1
+  [ -e "$path" ] && return 1
+  return 0
+}
+
+# Record one fast-lane ring and keep the log bounded the way the other logs in
+# this repo are: under a lock, with a pid-suffixed temp file, so a concurrent
+# ring cannot publish a half-written log or lose a line.
+fm_procevent_fast_lane_log_append() {  # <log-path> <line>
+  local log=$1 line=$2 lock size max tmp raw
+  max=${FM_FAST_LANE_RING_LOG_MAX_BYTES:-262144}
+  case "$max" in ''|*[!0-9]*|0) max=262144 ;; esac
+  lock="$log.lock"
+  # The audit row is the record of what the fast lane did, so the append waits
+  # for the lock rather than dropping the row: a ring nobody can read back is
+  # a ring nobody can audit. The wait is bounded, because this runs on the
+  # publish path and a lock that is never released must not wedge it; a row
+  # that could not be written is reported as a failure, never as a record.
+  fm_lock_acquire_wait_max "$lock" 5 || return 1
+  if ! printf '%s\n' "$line" >> "$log" 2>/dev/null; then
+    fm_lock_release "$lock"
+    return 1
+  fi
+  size=$(wc -c < "$log" 2>/dev/null | tr -d '[:space:]')
+  case "$size" in ''|*[!0-9]*) size=0 ;; esac
+  if [ "$size" -ge "$max" ]; then
+    # The byte cut can land inside a row, so the cut's first row is dropped
+    # whatever it holds: at most one record is lost, none is left half-written.
+    tmp="$log.tmp.$$"
+    raw="$tmp.raw"
+    tail -n 2000 "$log" 2>/dev/null | tail -c "$max" > "$raw" 2>/dev/null \
+      && awk 'NR > 1' "$raw" > "$tmp" 2>/dev/null \
+      && mv -f "$tmp" "$log" 2>/dev/null
+    rm -f "$tmp" "$raw" 2>/dev/null || true
+  fi
+  fm_lock_release "$lock"
+  return 0
+}
+
+# fm_procevent_supervisor_target / fm_procevent_supervisor_backend: the pane the
+# fast lane's doorbell rings, resolved by the same owner the away-mode daemon
+# uses (bin/fm-supervisor-target-lib.sh), so both find the captain's pane in
+# every home the fast lane exists for.
+fm_procevent_supervisor_target() {
+  command -v discover_supervisor_target >/dev/null 2>&1 || return 1
+  discover_supervisor_target 2>/dev/null
+}
+
+fm_procevent_supervisor_backend() {
+  command -v discover_supervisor_backend >/dev/null 2>&1 || return 1
+  discover_supervisor_backend 2>/dev/null
+}
+
+# fm_procevent_ring_doorbell <state> <backend> <target> <reason>
+# Ring the supervisor pane the way every other Firstmate pane delivery in this
+# repo does: the typed operational envelope, the target liveness check, the
+# busy and composer guards, and the shared submit primitive. A half-typed
+# captain line is never merged with the wake, and the receiving harness can
+# tell the wake from captain input. Echoes what happened: delivered, skipped
+# (nothing was typed), or failed (it was typed but not confirmed).
+fm_procevent_ring_doorbell() {  # <state> <backend> <target> <reason>
+  local state=$1 backend=$2 target=$3 reason=$4
+  local body encoded typed composer tail40 harness verdict
+  # The pane delivery path and the typed operational envelope are loaded here
+  # and only here: a deployment that ships this library without them never
+  # needs them, and never sees a missing-file error.
+  if [ ! -f "$_FM_PROCEVENT_LIB_DIR/fm-backend.sh" ] \
+    || [ ! -f "$_FM_PROCEVENT_LIB_DIR/fm-operational-input.sh" ]; then
+    printf 'skipped\n'; return 0
+  fi
+  if ! command -v fm_backend_source >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    . "$_FM_PROCEVENT_LIB_DIR/fm-backend.sh"
+  fi
+  # shellcheck source=/dev/null
+  . "$_FM_PROCEVENT_LIB_DIR/fm-operational-input.sh"
+  command -v fm_backend_source >/dev/null 2>&1 || { printf 'skipped\n'; return 0; }
+  fm_backend_source "$backend" >/dev/null 2>&1 || { printf 'skipped\n'; return 0; }
+  body="FIRSTMATE WATCHER WAKE: $reason"$'\n\n'"Run bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned."
+  fm_operational_input_encode watcher "$body" encoded 2>/dev/null \
+    || { printf 'failed\n'; return 0; }
+  fm_backend_target_exists "$backend" "$target" >/dev/null 2>&1 \
+    || { printf 'skipped\n'; return 0; }
+  harness=$(fm_daemon_primary_harness 2>/dev/null || printf unknown)
+  if [ "$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || printf unknown)" = busy ]; then
+    printf 'skipped\n'; return 0
+  fi
+  tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || tail40=
+  if [ -n "$tail40" ] \
+    && printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 | fm_busy_lines_match "$harness"; then
+    printf 'skipped\n'; return 0
+  fi
+  composer=$(fm_backend_composer_state "$backend" "$target" 2>/dev/null)
+  [ "$composer" = empty ] || { printf 'skipped\n'; return 0; }
+  # A harness that strips the invisible marker cannot tell the typed envelope
+  # from captain input, so the envelope travels as a durable record and only
+  # the constant doorbell line is typed.
+  typed=$encoded
+  if fm_operational_harness_needs_record "$harness"; then
+    fm_operational_record_write "$state" watcher "$body" typed 2>/dev/null \
+      || { printf 'failed\n'; return 0; }
+  fi
+  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$typed" 2 0.4 0.3 2>/dev/null)
+  [ "$verdict" = empty ] && { printf 'delivered\n'; return 0; }
+  printf 'failed\n'
+}
+
+# fm_procevent_ring_claim <state> <source-id> <sequence>
+# Claim the fast-lane ring for one event. The claim is what makes one ring per
+# event hold, so it runs under the source lock; the pane doorbell runs after
+# that lock is released. Returns 0 when this call claimed the ring, 1 when the
+# event was already claimed or already delivered, and 2 when the claim could not
+# be recorded at all - then the caller must not announce, and the slow lane
+# owns the event.
+fm_procevent_ring_claim() {  # <state> <source-id> <sequence>
+  local state=$1 id=$2 seq=$3 key ring_marker surfaced_marker tmp
+  key="procevent:$id:$seq"
+  ring_marker=$(fm_procevent_ring_marker "$state" "$key")
+  surfaced_marker=$(fm_procevent_surfaced_marker "$state" "$key")
+
+  if [ -f "$ring_marker" ] && [ ! -L "$ring_marker" ]; then
+    return 1
+  fi
+  if [ -f "$surfaced_marker" ] && [ ! -L "$surfaced_marker" ]; then
+    return 1
+  fi
+
+  # Record the ring before announcing it, so a concurrent reconcile cannot
+  # announce the same event twice.
+  tmp=$(umask 077; mktemp "$state/.ring-procevent.XXXXXX" 2>/dev/null || true)
+  if [ -z "$tmp" ]; then
+    return 2
+  fi
+  printf '%s\n' "$(date +%s)" > "$tmp" 2>/dev/null || true
+  if ! mv -f -- "$tmp" "$ring_marker" 2>/dev/null; then
+    rm -f -- "$tmp" 2>/dev/null || true
+    return 2
+  fi
+  if [ ! -f "$ring_marker" ] || [ -L "$ring_marker" ]; then
+    return 2
+  fi
+  return 0
+}
+
+# fm_procevent_mark_surfaced <state> <source-id> <sequence>
+# Record that the event was delivered, so the slow lane's next cycle skips the
+# still-queued key instead of announcing the same event again.
+fm_procevent_mark_surfaced() {  # <state> <source-id> <sequence>
+  local state=$1 id=$2 seq=$3 marker tmp
+  marker=$(fm_procevent_surfaced_marker "$state" "procevent:$id:$seq")
+  tmp=$(umask 077; mktemp "$state/.seen-procevent.XXXXXX" 2>/dev/null || true)
+  [ -n "$tmp" ] || return 1
+  : > "$tmp" 2>/dev/null || { rm -f -- "$tmp" 2>/dev/null || true; return 1; }
+  chmod 0600 "$tmp" 2>/dev/null || true
+  if ! mv -f -- "$tmp" "$marker" 2>/dev/null; then
+    rm -f -- "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# fm_procevent_mark_fast_lane_live <state> <queue-key>
+# Record that the fast lane is handling an event. The record is written
+# atomically, so the slow lane's picker never reads a partial one.
+fm_procevent_mark_fast_lane_live() {  # <state> <queue-key>
+  local state=$1 key=$2 marker tmp
+  marker=$(fm_procevent_fast_lane_live_marker "$state" "$key")
+  tmp=$(umask 077; mktemp "$state/.live-procevent.XXXXXX" 2>/dev/null || true)
+  [ -n "$tmp" ] || return 1
+  : > "$tmp" 2>/dev/null || { rm -f -- "$tmp" 2>/dev/null || true; return 1; }
+  chmod 0600 "$tmp" 2>/dev/null || true
+  if ! mv -f -- "$tmp" "$marker" 2>/dev/null; then
+    rm -f -- "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  return 0
 }
 
 # fm_procevent_ring_primary <state> <adapter> <source-id> <sequence> <result-path> <reason-line>
 # Ring the running session directly on the fast lane when a listener-backed
 # event arrives, after durable capture. Write, then ring: the event is already
 # stored in procevent-inbox/ and queued in state/.wake-queue before this runs.
+# The per-event claim (fm_procevent_ring_claim) already ran, so this announces
+# one event once.
 fm_procevent_ring_primary() {
   local state=$1 adapter=$2 id=$3 seq=$4 result=$5 reason=$6
-  local ring_log ring_dir ring_marker tmp json_tmp json_target epoch last_ring=0 cadence key
+  local ring_log ring_dir tmp json_tmp json_target epoch key
+  local doorbell=none consumer=none hook=unset consumer_live=no
   epoch=$(date +%s)
   key="procevent:$id:$seq"
-  ring_marker=$(fm_procevent_ring_marker "$state" "$key")
-  cadence=${FM_PROCEVENT_RING_CADENCE_SECS:-30}
-  case "$cadence" in ''|*[!0-9]*) cadence=30 ;; esac
 
-  # Stop repetition at its source: ring only when publication is genuinely
-  # new for that identity, or bound the re-announcement cadence so a burst cannot occur.
-  # The durable queue row remains the at-least-once authority.
-  if [ -f "$ring_marker" ] && [ ! -L "$ring_marker" ]; then
-    last_ring=$(cat "$ring_marker" 2>/dev/null || echo 0)
-    case "$last_ring" in ''|*[!0-9]*) last_ring=0 ;; esac
-  fi
-  if [ "$last_ring" -gt 0 ] && [ $((epoch - last_ring)) -lt "$cadence" ]; then
-    return 0
-  fi
-
-  # Record the ring epoch in the ring marker.
-  tmp=$(umask 077; mktemp "$state/.ring-procevent.XXXXXX" 2>/dev/null || true)
-  if [ -n "$tmp" ]; then
-    printf '%s\n' "$epoch" > "$tmp" 2>/dev/null || true
-    mv -f -- "$tmp" "$ring_marker" 2>/dev/null || rm -f -- "$tmp"
+  # One observation of the consumer's liveness decides both the live record
+  # and the pane doorbell, so the publish path pays for one probe and the two
+  # decisions cannot disagree because the consumer died in between.
+  if fm_procevent_fast_lane_consumer_live "$state"; then
+    consumer_live=yes
   fi
 
   ring_log=$(fm_procevent_fast_lane_log "$state")
-  mkdir -p "${ring_log%/*}" 2>/dev/null || true
-  printf '%s\tring\tfast-lane\t%s\t%s\t%s\t%s\n' "$epoch" "$adapter" "$id" "$seq" "$reason" >> "$ring_log"
-  if [ -n "${FM_SEND_LOG:-}" ] && [ "$FM_SEND_LOG" != "$ring_log" ]; then
-    printf '%s\tring\tfast-lane\t%s\t%s\t%s\t%s\n' "$epoch" "$adapter" "$id" "$seq" "$reason" >> "$FM_SEND_LOG" 2>/dev/null || true
-  fi
+  case "$ring_log" in
+    */*) mkdir -p "${ring_log%/*}" 2>/dev/null || true ;;
+  esac
 
   # A lost ring must still reach the session.
   # The surfaced marker must not be stamped at ring time because delivery is not yet proven;
   # leaving it unstamped allows the slow-lane watcher to rescue an event whose fast-lane ring was lost.
   # The captain's decision: an occasional duplicate is better than a lost message.
 
-  # Fast-lane signal to Pi primary watch extension if directory is active or present.
+  # Fast-lane signal to the Pi primary watch extension. The consumer owns its
+  # directory: without it there is no ring consumer here, and the slow lane
+  # delivers the event instead.
   ring_dir=$(fm_procevent_fast_lane_ring_dir "$state")
-  if [ -d "$ring_dir" ] || [ -d "${ring_dir%/*}" ]; then
-    mkdir -p "$ring_dir" 2>/dev/null || true
+  if [ -d "$ring_dir" ]; then
     json_tmp=$(umask 077; mktemp "$ring_dir/.ring.XXXXXX" 2>/dev/null || true)
     if [ -n "$json_tmp" ]; then
-      printf '{"version":1,"id":"%s","seq":%s,"adapter":"%s","result":"%s","reason":"%s"}\n' \
-        "$id" "$seq" "$adapter" "$result" "$reason" > "$json_tmp" 2>/dev/null || true
+      printf '{"version":1,"id":"%s","seq":%s,"adapter":"%s","reason":"%s"}\n' \
+        "$id" "$seq" "$adapter" "$reason" > "$json_tmp" 2>/dev/null || true
       json_target="$ring_dir/$id.$seq.ring.json"
-      mv -f -- "$json_tmp" "$json_target" 2>/dev/null || rm -f -- "$json_tmp"
+      if mv -f -- "$json_tmp" "$json_target" 2>/dev/null; then
+        consumer=written
+        # A live consumer is handling this event, so the slow lane's picker
+        # must leave it alone: the live record is the durable statement that
+        # the fast lane has the event, and the consumer clears it when its
+        # delivery settles. A consumer that is no longer alive can never
+        # announce the event, so no record is written and the slow lane
+        # delivers it.
+        if [ "$consumer_live" = yes ]; then
+          fm_procevent_mark_fast_lane_live "$state" "$key" || true
+        fi
+      else
+        rm -f -- "$json_tmp" 2>/dev/null || true
+      fi
     fi
   fi
 
-  # Optional harness or test ring command.
+  # Optional harness or test ring command. It is a channel of its own, so the
+  # ring record names what it did.
   if [ -n "${FM_FAST_LANE_RING_COMMAND:-}" ]; then
-    "$FM_FAST_LANE_RING_COMMAND" "$state" "$adapter" "$id" "$seq" "$result" "$reason" 2>/dev/null || true
+    if "$FM_FAST_LANE_RING_COMMAND" "$state" "$adapter" "$id" "$seq" "$result" "$reason" 2>/dev/null; then
+      hook=ran
+    else
+      hook=failed
+    fi
   fi
 
-  # Primary supervisor pane doorbell (tmux or herdr backend).
-  if [ -n "${FM_SUPERVISOR_BACKEND:-}" ] && [ -n "${FM_SUPERVISOR_TARGET:-}" ]; then
-    case "$FM_SUPERVISOR_BACKEND" in
-      tmux)
-        tmux send-keys -t "$FM_SUPERVISOR_TARGET" -l "FIRSTMATE FAST-LANE WAKE: $reason" 2>/dev/null || true
-        tmux send-keys -t "$FM_SUPERVISOR_TARGET" Enter 2>/dev/null || true
-        ;;
+  # Supervisor pane doorbell. It goes through the repo's canonical pane
+  # delivery path - the typed operational envelope, the target liveness check,
+  # the busy and composer guards, and the shared submit primitive - so a
+  # half-typed captain line is never merged with the wake. The shared backend
+  # dispatch covers every backend the supervisor daemon supports (tmux and
+  # herdr).
+  # The pane and a live Pi consumer are alternative consumers: one publish
+  # announces the event once, through exactly one of them, and the pane is
+  # rung when no live consumer took the event. The ring command hook is an
+  # additional channel, and the record names its outcome too.
+  if [ "$consumer_live" = yes ]; then
+    doorbell=none
+  else
+    doorbell=$(fm_procevent_ring_doorbell "$state" "$(fm_procevent_supervisor_backend)" "$(fm_procevent_supervisor_target)" "$reason")
+    case "$doorbell" in
+      delivered|skipped|failed) ;;
+      *) doorbell=skipped ;;
     esac
+    if [ "$doorbell" = delivered ]; then
+      # A confirmed pane delivery is the slow lane's "already surfaced" record,
+      # so its next cycle skips the still-queued key instead of announcing the
+      # same event again. It also retires the consumer's copy of the event, so
+      # a consumer that comes alive right after the pane took it finds nothing
+      # to announce.
+      fm_procevent_mark_surfaced "$state" "$id" "$seq" || true
+      if [ "$consumer" = written ] && fm_procevent_retire_ring_file "$state" "$key"; then
+        consumer=retired
+      fi
+    fi
   fi
-  return 0
+
+  # The ring record names what actually happened: what the doorbell did,
+  # whether the consumer ring file was written, and what the ring command
+  # hook did, so the log never claims a delivery the pane, the consumer or
+  # the hook did not get.
+  fm_procevent_fast_lane_log_append "$ring_log" \
+    "$(printf '%s\tring\tfast-lane\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+      "$epoch" "$adapter" "$id" "$seq" "$doorbell" "$consumer" "$hook" "$reason")"
 }

@@ -94,10 +94,19 @@ fi
 # --- main firstmate repo ---------------------------------------------------
 
 reread_firstmate="no"
+reload_pi_session="no"
+firstmate_before=$(git -C "$FM_ROOT" rev-parse HEAD 2>/dev/null || printf '')
 ff_target "$FM_ROOT" "firstmate" origin no no "" "" "$CONFIG"
 if [ "$FF_STATUS" = "updated" ]; then
   if [ -n "$FF_INSTR" ]; then
     reread_firstmate="yes"
+  fi
+  # A running Pi session holds the extension it loaded at startup, so a
+  # changed extension is not in that session until it reloads. Say so rather
+  # than leaving a live session on the previous build's fast-lane contract.
+  if [ -n "$firstmate_before" ] \
+    && ! git -C "$FM_ROOT" diff --quiet "$firstmate_before" HEAD -- .pi/extensions 2>/dev/null; then
+    reload_pi_session="yes"
   fi
   # A fast-forward changes bin/'s bytes out from under any locally armed
   # fm-procevent-when watch's trust binding, with no tampering involved; left
@@ -248,5 +257,9 @@ fi
 # then also steered about the instructions it just relaunched on.
 
 echo "reread-firstmate: $reread_firstmate"
+echo "reload-pi-session: $reload_pi_session"
+if [ "$reload_pi_session" = yes ]; then
+  echo "reload-pi-session-note: the running Pi session must be reloaded to pick up the new fast-lane consumer marker; until it reloads, the previous build's marker path is what runs"
+fi
 echo "restart-secondmates:${FF_RESTART_WINDOWS:- none}"
 echo "nudge-secondmates:${FF_STEER_WINDOWS:- none}"

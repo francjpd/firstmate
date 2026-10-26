@@ -810,6 +810,7 @@ cmd_register_extension() {
 publish_result() {  # <result-file>
   local result=$1 id seq adapter line status=1 owner_task='' message='' record=''
   local ring_backend ring_target ring_meta inbox_dir handled_dir pre_existing existing new_record
+  local ring_claimed=0
   id=$(fm_procevent_result_source_id "$result")
   seq=$(fm_procevent_result_sequence "$result")
   fm_procevent_source_id_valid "$id" || return 1
@@ -891,10 +892,20 @@ EOF
     unset FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD
     if fm_wake_append check "procevent:$id:$seq" "check: $line"; then
       status=0
-      fm_procevent_ring_primary "$STATE" "$adapter" "$id" "$seq" "$result" "check: $line" || true
+      fm_procevent_ring_claim "$STATE" "$id" "$seq" && ring_claimed=1
     fi
   fi
   fm_procevent_source_lock_release "$id"
+  # The pane doorbell is a multi-second pane interaction, so it runs after the
+  # source lock is released, exactly like the sibling task-inbox ring above.
+  if [ "$ring_claimed" = 1 ]; then
+    if ! fm_procevent_ring_primary "$STATE" "$adapter" "$id" "$seq" "$result" "check: $line"; then
+      # The event is published and queued, so the publish stands; what is
+      # missing is the fast lane's own audit row, and that loss is reported
+      # rather than swallowed.
+      printf 'procevent: fast-lane ring record missing for %s\n' "$id" >&2
+    fi
+  fi
   return "$status"
 }
 

@@ -702,17 +702,9 @@ mark_escalated_seen() {  # <state> <captured-endpoint-file>
 # A daemon launched in its own terminal (bin/fm-afk-launch.sh) is outside the
 # captain's process tree, so the launcher names the captain's harness in
 # FM_DAEMON_PRIMARY_HARNESS; detection covers a harness-native daemon.
-# Resolved lazily and memoized: harness detection walks process ancestry, which
-# is too heavy to pay on every source of this library (the unit tests and the
-# launcher source it purely for its pure functions).
-fm_daemon_primary_harness() {
-  if [ -z "${FM_DAEMON_PRIMARY_HARNESS:-}" ]; then
-    FM_DAEMON_PRIMARY_HARNESS=$("$FM_DAEMON_DIR/fm-harness.sh" 2>/dev/null || printf 'unknown')
-    [ -n "$FM_DAEMON_PRIMARY_HARNESS" ] || FM_DAEMON_PRIMARY_HARNESS=unknown
-  fi
-  printf '%s' "$FM_DAEMON_PRIMARY_HARNESS"
-}
-
+# The resolution itself is owned by bin/fm-supervisor-target-lib.sh
+# (fm_daemon_primary_harness), so the daemon and the fast lane's pane
+# doorbell resolve the same harness the same way.
 pane_is_busy() {  # <target> [backend]
   local target=$1 backend=${2:-tmux} native tail40 harness
   harness=$(fm_daemon_primary_harness)

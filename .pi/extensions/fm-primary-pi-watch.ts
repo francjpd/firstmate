@@ -120,6 +120,8 @@ type SessionGeneration = {
   // that delivery settles instead of being skipped by the single-flight guard.
   deferredClose: { message: string; predecessorArmPid: string } | null;
   fastLaneWatcher: ReturnType<typeof watch> | null;
+  fastLaneWatcherTimer: ReturnType<typeof setTimeout> | null;
+  fastLaneWatcherRetries: number;
 };
 
 function refreshWatchToolShell(
@@ -152,6 +154,7 @@ const armScript = `${fmRoot}/bin/fm-watch-arm.sh`;
 const marker = `${state}/.pi-watch-extension-loaded`;
 const handoffDir = `${state}/extensions/pi-primary-watch`;
 const fastLaneDir = `${state}/fast-lane`;
+const fastLaneConsumerMarker = `${fastLaneDir}/.consumer`;
 const actionableHandoff = `${handoffDir}/session-replacement-actionable.json`;
 const extensionLog = `${state}/.watch-extension.log`;
 const extensionLogMaxLines = extensionLogKeepLines();
@@ -167,6 +170,8 @@ const armReadyTimeoutMs = positiveInteger(
   process.platform === "win32" ? 35000 : 12000,
 );
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
+const fastLaneWatcherRetryLimit = 3;
+const fastLaneWatcherRetryDelayMs = 1000;
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -541,60 +546,190 @@ function classifyClose(stdout: string, stderr: string, code: number | null, sign
   };
 }
 
-function extractProceventIdentity(text: string): string | null {
-  const match = /procevent\s+([A-Za-z0-9._-]+)\s+([A-Za-z0-9._-]+)\s+([0-9]+)/.exec(text);
-  if (!match) return null;
-  return `${match[1]}:${match[2]}:${match[3]}`;
+// The event key both lanes name for one procevent: <id>:<seq>. The fast lane
+// carries the adapter as well, and the slow lane names the same event in the
+// colon form, so both normalize to this key and compare equal.
+function proceventEventKey(text: string): string | null {
+  const spaced = /procevent\s+([A-Za-z0-9._-]+)\s+([A-Za-z0-9._-]+)\s+([0-9]+)/.exec(text);
+  if (spaced) return `${spaced[2]}:${spaced[3]}`;
+  const colon = /procevent:([A-Za-z0-9._-]+):([0-9]+)/.exec(text);
+  if (colon) return `${colon[1]}:${colon[2]}`;
+  return null;
 }
 
 const MAX_DELIVERED_IDENTITIES = 1000;
-const deliveredIdentities = new Map<string, { timestamp: number; response?: string }>();
+const deliveredIdentities = new Map<string, { timestamp: number }>();
 
-// Bounded cache of delivered event identities (adapter:id:seq).
-// An entry is added when a fast-lane or slow-lane wake for that identity is delivered.
-// Entries are cleared / evicted when:
-// 1. The cache exceeds MAX_DELIVERED_IDENTITIES (FIFO eviction of the oldest entries).
-// 2. An event is acknowledged and retired (the durable .handled marker in procevent-inbox/
-//    becomes the permanent tombstone, so the in-memory entry is no longer needed).
-// 3. A session shutdown without replacement clears in-memory session state.
+// Bounded cache of the event identities the session has consumed a wake for.
+// An entry is added when the session consumes a fast-lane wake for that
+// identity, which is what keeps one event from being offered again.
+// Entries are evicted when the cache exceeds MAX_DELIVERED_IDENTITIES (FIFO
+// eviction of the oldest entries), and the cache is cleared when a session
+// shuts down without a replacement.
 function isIdentityDelivered(identity: string): boolean {
   return deliveredIdentities.has(identity);
 }
 
-function recordDeliveredIdentity(identity: string, response?: string): void {
+function recordDeliveredIdentity(identity: string): void {
   if (deliveredIdentities.size >= MAX_DELIVERED_IDENTITIES) {
     const oldestKey = deliveredIdentities.keys().next().value;
     if (oldestKey) deliveredIdentities.delete(oldestKey);
   }
-  deliveredIdentities.set(identity, { timestamp: Date.now(), response });
+  deliveredIdentities.set(identity, { timestamp: Date.now() });
+}
+
+function proceventMarkerPath(stateDir: string, prefix: string, identity: string): string | null {
+  const parts = identity.split(":");
+  if (parts.length < 2) return null;
+  const key = `procevent:${parts[0]}:${parts[1]}`;
+  const hex = Buffer.from(key, "utf8").toString("hex");
+  return resolve(stateDir, `${prefix}${hex}`);
+}
+
+function surfacedMarkerPath(stateDir: string, identity: string): string | null {
+  return proceventMarkerPath(stateDir, ".seen-procevent-", identity);
+}
+
+function liveMarkerPath(stateDir: string, identity: string): string | null {
+  return proceventMarkerPath(stateDir, ".live-procevent-", identity);
+}
+
+// The fast lane's live record: the durable statement that the fast lane is
+// handling one event. The slow lane's picker skips an event that has one,
+// and the record is cleared when the delivery settles, so a delivery that
+// never completed leaves the event to the slow lane.
+function markFastLaneLive(stateDir: string, identity: string): void {
+  const markerPath = liveMarkerPath(stateDir, identity);
+  if (!markerPath) return;
+  const temporary = `${markerPath}.tmp-${process.pid}`;
+  try {
+    writeFileSync(temporary, "", { mode: 0o600 });
+    renameSync(temporary, markerPath);
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {}
+  }
+}
+
+function clearFastLaneLive(stateDir: string, identity: string): void {
+  const markerPath = liveMarkerPath(stateDir, identity);
+  if (!markerPath) return;
+  try {
+    unlinkSync(markerPath);
+  } catch {}
+}
+
+// The host's uname, the way bin/fm-wake-lib.sh reads it: the same string
+// decides which key name the process identity carries.
+function hostUname(): string {
+  try {
+    const named = spawnSync("uname", [], { encoding: "utf8" });
+    if (named.status !== 0 || !named.stdout) return "unknown";
+    return named.stdout.trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+// The consumer's process identity, computed by the same rule the shell
+// verifies (bin/fm-wake-lib.sh fm_pid_identity): the /proc form whenever
+// those files are readable, the same key name, and the same portable ps
+// fallback. The two must produce byte-identical strings for the same live
+// pid, or the consumer never reads as live.
+function consumerProcessIdentity(): string {
+  try {
+    const procRoot = process.env.FM_PROC_ROOT_OVERRIDE || "/proc";
+    let statText = "";
+    let cmdline: Buffer | null = null;
+    try {
+      statText = readFileSync(`${procRoot}/${process.pid}/stat`, "utf8");
+      cmdline = readFileSync(`${procRoot}/${process.pid}/cmdline`);
+    } catch {
+      statText = "";
+      cmdline = null;
+    }
+    if (statText && cmdline) {
+      const close = statText.lastIndexOf(")");
+      const fields = close >= 0 ? statText.slice(close + 1).trim().split(/\s+/u) : [];
+      if (fields.length < 20 || !/^[0-9]+$/u.test(fields[19] ?? "") || cmdline.length === 0) {
+        return "";
+      }
+      const key = hostUname() === "Linux" ? "linux-starttime" : "proc-starttime";
+      return `${key}=${fields[19]} cmdline-hex=${cmdline.toString("hex")}`;
+    }
+    const listed = spawnSync("ps", ["-p", String(process.pid), "-o", "lstart=", "-o", "command="], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C", COLUMNS: "10000" },
+    });
+    if (listed.status !== 0 || !listed.stdout) return "";
+    return listed.stdout.replace(/^[^\S\n]*/gmu, "").replace(/\n+$/u, "");
+  } catch {
+    return "";
+  }
+}
+
+// The consumer's liveness marker: while it is there the fast lane knows a
+// session is watching the ring directory, so it records that it is handling
+// the events it rings. The marker names the process and that process's
+// identity, so a pid the kernel reused does not read as the consumer.
+function publishFastLaneConsumer(): void {
+  try {
+    mkdirSync(fastLaneDir, { recursive: true, mode: 0o700 });
+    const identity = consumerProcessIdentity();
+    const temporary = `${fastLaneConsumerMarker}.tmp-${process.pid}`;
+    writeFileSync(temporary, `${process.pid}\n${identity}\n`, { mode: 0o600 });
+    renameSync(temporary, fastLaneConsumerMarker);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    appendExtensionLog(`ring fast-lane consumer marker failed: ${detail}`);
+  }
+}
+
+function retireFastLaneConsumer(): void {
+  try {
+    unlinkSync(fastLaneConsumerMarker);
+  } catch {}
 }
 
 function stampSurfacedMarker(stateDir: string, identity: string): void {
-  const parts = identity.split(":");
-  if (parts.length < 3) return;
-  const key = `procevent:${parts[1]}:${parts[2]}`;
-  const hex = Buffer.from(key, "utf8").toString("hex");
-  const markerPath = resolve(stateDir, `.seen-procevent-${hex}`);
+  const markerPath = surfacedMarkerPath(stateDir, identity);
+  if (!markerPath) return;
+  const temporary = `${markerPath}.tmp-${process.pid}`;
   try {
-    writeFileSync(markerPath, "");
+    writeFileSync(temporary, "", { mode: 0o600 });
+    renameSync(temporary, markerPath);
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {}
+  }
+}
+
+// A ring file is retired only once its wake is delivered or known to be a
+// duplicate. A file that survives is the requeue: the next session start
+// offers it again.
+function removeRingFile(path: string): void {
+  try {
+    unlinkSync(path);
   } catch {}
 }
 
 function isIdentityAcknowledged(stateDir: string, identity: string): boolean {
   const parts = identity.split(":");
-  if (parts.length < 3) return false;
-  const handledPath = resolve(stateDir, "procevent-inbox", `${parts[1]}.${parts[2]}.handled`);
+  if (parts.length < 2) return false;
+  const handledPath = resolve(stateDir, "procevent-inbox", `${parts[0]}.${parts[1]}.handled`);
   return existsSync(handledPath);
 }
 
 function isIdentityPending(owner: SessionGeneration, identity: string): boolean {
   for (const item of owner.pendingActionables) {
     if (item.eventIdentity === identity) return true;
-    if (extractProceventIdentity(item.message) === identity) return true;
+    if (proceventEventKey(item.message) === identity) return true;
   }
   for (const [, wake] of owner.unconsumedWakes) {
     if (wake.pending.eventIdentity === identity) return true;
-    if (extractProceventIdentity(wake.content) === identity) return true;
+    if (proceventEventKey(wake.content) === identity) return true;
   }
   return false;
 }
@@ -615,6 +750,8 @@ function createGeneration(): SessionGeneration {
     unconsumedWakes: new Map(),
     deferredClose: null,
     fastLaneWatcher: null,
+    fastLaneWatcherTimer: null,
+    fastLaneWatcherRetries: 0,
   };
 }
 
@@ -637,6 +774,10 @@ function relinquishGeneration(generation: SessionGeneration): void {
       generation.fastLaneWatcher.close();
     } catch {}
     generation.fastLaneWatcher = null;
+  }
+  if (generation.fastLaneWatcherTimer) {
+    clearTimeout(generation.fastLaneWatcherTimer);
+    generation.fastLaneWatcherTimer = null;
   }
   if (generation.child) retiringGenerations.add(generation);
 }
@@ -747,18 +888,12 @@ export default function (pi: ExtensionAPI) {
 
   // Pi consumed a main follow-up: an idle main at before_agent_start, a
   // streaming main at the user message_start that joins the running run.
+  // Only the wake this session delivered, byte for byte, is a wake: text that
+  // merely classifies as one, or names the same event, is ordinary input.
   function consumeWake(owner: SessionGeneration, text: string): void {
     const matchedTokens: string[] = [];
-    const textIdentity = extractProceventIdentity(text);
     for (const [token, wake] of owner.unconsumedWakes) {
-      const match =
-        wake.content === text ||
-        Boolean(
-          textIdentity &&
-            (wake.pending.eventIdentity === textIdentity ||
-              extractProceventIdentity(wake.content) === textIdentity),
-        );
-      if (!match) continue;
+      if (wake.content !== text) continue;
       matchedTokens.push(token);
     }
     for (const token of matchedTokens) {
@@ -916,6 +1051,58 @@ export default function (pi: ExtensionAPI) {
     owner.cleanupFailure = "";
   }
 
+  // The fast lane stays armed: a watcher failure re-creates the ring directory
+  // and re-establishes the watch with a bounded retry, so the lane recovers
+  // instead of dying with the watcher. The slow lane remains the backstop.
+  function scheduleFastLaneWatcherRetry(owner: SessionGeneration, detail: string): void {
+    appendExtensionLog(`ring fast-lane watcher failed: ${detail}`);
+    owner.fastLaneWatcherRetries += 1;
+    if (owner.fastLaneWatcherRetries > fastLaneWatcherRetryLimit) {
+      appendExtensionLog("ring fast-lane watcher gave up; the slow lane remains the backstop");
+      // The fast lane is no longer watching, so the slow lane must be free to
+      // deliver the events the fast lane left behind.
+      retireFastLaneConsumer();
+      return;
+    }
+    if (owner.fastLaneWatcherTimer) return;
+    const timer = setTimeout(() => {
+      owner.fastLaneWatcherTimer = null;
+      armFastLaneWatcher(owner);
+    }, fastLaneWatcherRetryDelayMs);
+    timer.unref?.();
+    owner.fastLaneWatcherTimer = timer;
+  }
+
+  function armFastLaneWatcher(owner: SessionGeneration): void {
+    if (owner.fastLaneWatcher) return;
+    if (!generationIsLive(owner)) return;
+    try {
+      mkdirSync(fastLaneDir, { recursive: true, mode: 0o700 });
+      publishFastLaneConsumer();
+    } catch (error) {
+      scheduleFastLaneWatcherRetry(owner, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    try {
+      const watcher = watch(fastLaneDir, () => {
+        owner.fastLaneWatcherRetries = 0;
+        processFastLaneRings(owner);
+      });
+      watcher.on("error", (error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        try {
+          watcher.close();
+        } catch {}
+        if (owner.fastLaneWatcher === watcher) owner.fastLaneWatcher = null;
+        scheduleFastLaneWatcherRetry(owner, detail);
+      });
+      watcher.unref?.();
+      owner.fastLaneWatcher = watcher;
+    } catch (error) {
+      scheduleFastLaneWatcherRetry(owner, error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function processFastLaneRings(owner: SessionGeneration): void {
     if (!generationIsLive(owner)) return;
     let entries: string[] = [];
@@ -930,7 +1117,6 @@ export default function (pi: ExtensionAPI) {
       let content = "";
       try {
         content = readFileSync(fullPath, "utf8");
-        unlinkSync(fullPath);
       } catch {
         continue;
       }
@@ -938,20 +1124,28 @@ export default function (pi: ExtensionAPI) {
       try {
         parsed = JSON.parse(content);
       } catch {
+        appendExtensionLog(`ring fast-lane unreadable file=${entry}`);
         continue;
       }
       const reason = parsed.reason || `check: procevent ${parsed.adapter || "unknown"} ${parsed.id || "0"} ${parsed.seq || 0}`;
       const eventIdentity = parsed.adapter && parsed.id && parsed.seq !== undefined
-        ? `${parsed.adapter}:${parsed.id}:${parsed.seq}`
-        : extractProceventIdentity(reason);
+        ? `${parsed.id}:${parsed.seq}`
+        : proceventEventKey(reason);
 
       if (eventIdentity) {
         if (
-          isIdentityPending(owner, eventIdentity) ||
           isIdentityDelivered(eventIdentity) ||
           isIdentityAcknowledged(state, eventIdentity)
         ) {
           appendExtensionLog(`ring fast-lane duplicate dropped identity=${eventIdentity}`);
+          removeRingFile(fullPath);
+          clearFastLaneLive(state, eventIdentity);
+          continue;
+        }
+        if (isIdentityPending(owner, eventIdentity)) {
+          // A wake for this event is already on its way; that delivery owns
+          // the ring file until it settles.
+          appendExtensionLog(`ring fast-lane in flight identity=${eventIdentity}`);
           continue;
         }
       }
@@ -960,12 +1154,63 @@ export default function (pi: ExtensionAPI) {
       const pending = createPendingActionable(reason, "");
       if (eventIdentity) pending.eventIdentity = eventIdentity;
       enqueuePendingActionable(owner, pending);
-      void deliverActionableWake(owner, reason, false, pending).then((delivered) => {
-        if (delivered && eventIdentity) {
-          recordDeliveredIdentity(eventIdentity);
-          stampSurfacedMarker(state, eventIdentity);
-        }
+      // The fast lane is handling this event now, so the slow lane's picker
+      // leaves it alone until this delivery settles.
+      if (eventIdentity) markFastLaneLive(state, eventIdentity);
+      // The claim the ordinary picker already looks at: while the fast lane
+      // delivers this wake no other delivery path may pick the record, and a
+      // record replayed into a replacement session waits for this delivery
+      // instead of being delivered a second time.
+      let settleClaim: (settlement: "delivered" | "failed") => void = () => {};
+      const settlement = new Promise<"delivered" | "failed">((resolveSettlement) => {
+        settleClaim = resolveSettlement;
       });
+      const deliveryClaim = { owner, settlement };
+      replacementCoordinator.deliveries.set(pending.token, deliveryClaim);
+      const releaseClaim = (): void => {
+        if (replacementCoordinator.deliveries.get(pending.token) === deliveryClaim) {
+          replacementCoordinator.deliveries.delete(pending.token);
+        }
+      };
+      void deliverActionableWake(owner, reason, false, pending)
+        .then((delivered) => {
+          settleClaim(delivered ? "delivered" : "failed");
+          releaseClaim();
+          if (delivered) {
+            if (!owner.unconsumedWakes.has(pending.token)) {
+              // The branch handled it, or Pi consumed it before this ran.
+              pending.delivered = true;
+              try {
+                finishPendingActionable(owner, pending);
+              } catch (error) {
+                surfaceCleanupFailure(owner, error);
+              }
+            }
+            if (eventIdentity) {
+              stampSurfacedMarker(state, eventIdentity);
+            }
+            removeRingFile(fullPath);
+          }
+          // The delivery settled either way, so the fast lane is done with
+          // this event: a delivery that never completed leaves the event to
+          // the slow lane, which takes it over.
+          if (eventIdentity) clearFastLaneLive(state, eventIdentity);
+        })
+        .catch((error) => {
+          settleClaim("failed");
+          releaseClaim();
+          if (eventIdentity) clearFastLaneLive(state, eventIdentity);
+          const detail = error instanceof Error ? error.message : String(error);
+          appendExtensionLog(`ring fast-lane delivery failed identity=${eventIdentity ?? "unknown"} error=${detail}`);
+          // The ring file is the requeue: retire the pending record so the
+          // next offer of this ring can deliver it again.
+          try {
+            finishPendingActionable(owner, pending);
+          } catch (cleanupError) {
+            surfaceCleanupFailure(owner, cleanupError);
+            schedulePendingCleanup(owner);
+          }
+        });
     }
   }
 
@@ -1006,7 +1251,12 @@ export default function (pi: ExtensionAPI) {
         // A record Pi has accepted but not consumed is neither redelivered
         // nor finished here: consumption finishes it, replacement replays it.
         const pending = owner.pendingActionables.find(
-          (item) => !item.delivered && !owner.unconsumedWakes.has(item.token),
+          (item) =>
+            !item.delivered &&
+            !owner.unconsumedWakes.has(item.token) &&
+            // A record this generation is already delivering (the fast lane's
+            // own claim) is not delivered a second time.
+            replacementCoordinator.deliveries.get(item.token)?.owner !== owner,
         );
         if (!pending) break;
         const existingClaim = replacementCoordinator.deliveries.get(pending.token);
@@ -1338,18 +1588,6 @@ export default function (pi: ExtensionAPI) {
     if (!generationIsLive(owner)) return { ok: false, message: shuttingDownMessage };
     if (lockOwnership() !== "owned") return startArm(owner);
     replacementCoordinator.receiver = receiveReplacementActionable;
-    try {
-      mkdirSync(fastLaneDir, { recursive: true, mode: 0o700 });
-    } catch {}
-    processFastLaneRings(owner);
-    if (!owner.fastLaneWatcher) {
-      try {
-        owner.fastLaneWatcher = watch(fastLaneDir, () => {
-          processFastLaneRings(owner);
-        });
-        owner.fastLaneWatcher.unref?.();
-      } catch {}
-    }
     let pending: PendingActionableClose[] = [];
     let loadFailure = "";
     try {
@@ -1362,6 +1600,10 @@ export default function (pi: ExtensionAPI) {
     for (const actionable of [...pending, ...inProcessPending]) {
       enqueuePendingActionable(owner, actionable);
     }
+    // The fast-lane scan runs after the handoff load, so the in-flight guard
+    // sees the replayed records and does not deliver the same event twice.
+    armFastLaneWatcher(owner);
+    processFastLaneRings(owner);
     if (owner.pendingActionables.length > 0) {
       if (loadFailure) surfaceFailure(owner, loadFailure);
       const armResult = startArm(owner, owner.pendingActionables[0].predecessorArmPid);
@@ -1376,35 +1618,16 @@ export default function (pi: ExtensionAPI) {
     return result;
   }
 
-  pi.on?.("before_agent_start", (event, ctx) => {
-    // A custom message cannot consume a pending user wake, even with equal text.
+  pi.on?.("before_agent_start", (event) => {
+    // A custom message cannot consume a pending user wake, even with equal
+    // text: a custom run carries no prompt, so this guard is the user-only
+    // rule on every pinned Pi release.
     if (!("prompt" in event)) return;
-    if (event.messageType !== "user") return;
     consumeWake(generation, event.prompt);
-    const identity = extractProceventIdentity(event.prompt);
-    if (identity) {
-      if (isIdentityDelivered(identity) || isIdentityAcknowledged(state, identity)) {
-        appendExtensionLog(`suppress duplicate session turn identity=${identity}`);
-        ctx?.abort?.();
-        const stored = deliveredIdentities.get(identity);
-        return {
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: stored?.response || `[firstmate] event ${identity} already delivered; duplicate suppressed.` }],
-          },
-        };
-      }
-      recordDeliveredIdentity(identity);
-    }
   });
   pi.on?.("message_start", (event) => {
     if (event.message.role !== "user") return;
-    const text = userMessageText(event.message.content);
-    consumeWake(generation, text);
-    const identity = extractProceventIdentity(text);
-    if (identity) {
-      recordDeliveredIdentity(identity);
-    }
+    consumeWake(generation, userMessageText(event.message.content));
   });
 
   pi.on?.("session_start", async () => {
@@ -1418,6 +1641,9 @@ export default function (pi: ExtensionAPI) {
     if (replacementCoordinator.receiver === receiveReplacementActionable) replacementCoordinator.receiver = null;
     if (!replacement) {
       deliveredIdentities.clear();
+      // The session is gone, so the fast lane is not watching any more: the
+      // slow lane must be free to deliver the events it left behind.
+      retireFastLaneConsumer();
     }
     await stopSessionGeneration(generation, replacement);
   });

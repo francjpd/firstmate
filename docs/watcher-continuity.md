@@ -525,10 +525,34 @@ It also covers generation-claim single-flight, stuck-claim supersession, superse
 Firstmate splits wake transport into two distinct lanes:
 
 - **Fast lane**: for events with an active listener (such as Lavish review boards or push sockets).
-  On event arrival, the listener writes the event durably to `state/procevent-inbox/` and `state/.wake-queue` before ringing the running session directly (`state/.fast-lane-ring.log`, `state/fast-lane/` for Pi extension, and supervisor doorbell).
+  On event arrival, the listener writes the event durably to `state/procevent-inbox/` and `state/.wake-queue` before ringing the running session directly.
+  One event is announced once: the ring is recorded in `state/.fast-lane-ring.log`, handed to the Pi primary watch extension as `state/fast-lane/<id>.<seq>.ring.json` when that consumer's directory already exists, and announced to a supervisor pane by doorbell when no live Pi consumer took the event (the pane and the primary harness are resolved by the shared owner `bin/fm-supervisor-target-lib.sh`, the same resolution the away-mode daemon uses, so the pane is found in every home the fast lane exists for; the delivery uses the canonical pane path: the typed watcher envelope with the drain instruction, the pane's liveness, busy and composer guards, and the shared submit primitive, and a harness that strips the invisible marker receives the envelope as a durable record with the constant doorbell line instead); the ring-command hook `FM_FAST_LANE_RING_COMMAND`, when configured, additionally runs for that same event, so it is an additional, non-exclusive channel and not one of the alternatives, and the ring record names what it did.
+  A confirmed pane doorbell leaves the slow lane's "already surfaced" record and retires the fast lane's ring file for that event, so the slow lane skips the still-queued key, a consumer that comes alive right after the pane took the event finds nothing to announce, and the captain is woken once per event; a skipped or failed doorbell leaves no record and the slow lane still delivers the event. A slow-lane announcement retires the fast lane's ring file for the same event, so neither lane delivers it twice. A consumer that becomes live between the liveness check and the pane delivery can announce the same event a second time: an occasional duplicate is better than a lost message.
+  While a live Pi consumer holds an event, the fast lane's live record (`state/.live-procevent-<hex>`, written while the consumer named in `state/fast-lane/.consumer` is the same live process that wrote that marker, and cleared when its delivery settles) says the event is being handled, so the slow lane's picker skips that key in the very cycle that rings it. The record is cleared when the delivery settles either way, so an event whose fast-lane delivery never completed is taken over by the slow lane; a consumer that is no longer the process that wrote its marker holds nothing, so its stale marker leaves the event to the slow lane as well, and the slow lane's announcement retires the fast lane's ring file for the same key.
+  The consumer's marker `state/fast-lane/.consumer` carries the consumer's pid and, on the current build, the process identity the shell verifies against the live process. The shell accepts both shapes, so a session still running the previous build stays a consumer instead of being read as no consumer at all. The identity form proves the marked process is the one that wrote the marker, and it never falls back to bare pid liveness. The previous build's pid-only form carries no recorded identity, so only the liveness half of the proof applies: the repo's own identity primitive, which rejects a process whose command line is gone, so where the platform can read that command line a dead consumer's zombie is not a consumer. Where the platform can also prove a process's start time, the marked process must have started no later than the marker was written, so a pid the kernel handed out again reads as stale. On a platform that reads neither, the legacy form rests on liveness alone, and a dead process that left a zombie behind and a pid the kernel reused are not distinguishable there.
+  The ring record names what actually happened: the doorbell's outcome, whether the consumer ring file was written (or was retired because the pane took the event), and what the `FM_FAST_LANE_RING_COMMAND` hook did, so the log never claims a delivery the pane, the consumer or the hook did not get.
   The surfaced marker is left unstamped at ring time so the slow-lane watcher can rescue an event whose fast-lane ring was lost, while session deduplication keeps repeated rings from duplicating work.
-- **Slow lane**: for background checks without a listener (worker liveness, status changes, PR checks, quota windows, clone drift). Operates on its regular cadence (`bin/fm-watch.sh`), provably incapable of delaying fast-lane events.
+  A Pi session that is running the previous build writes the pid-only marker, so it must be reloaded to pick up the current writer; until it is, the pid-only path is what runs. `bin/fm-update.sh` says so in its summary (`reload-pi-session: yes`) whenever an update lands a change to the Pi extension, so a landing cannot leave a live session on the previous build's marker without saying so.
+- **Slow lane**: for background checks without a listener (worker liveness, status changes, PR checks, quota windows, clone drift). Operates on its regular cadence (`bin/fm-watch.sh`), and a fast-lane event is never delayed by a slow pass in flight.
 - **Structured consumption**: consumers read the structured view via adapter commands (`bin/fm-procevent-lavish.sh read`), keeping raw DOM snapshots and redundant transport instruction blocks out of model context.
+
+`tests/fm-transport-lanes.test.sh` covers these contracts:
+
+- One ring per event, and no ring file where no consumer directory exists.
+- A real slow watcher pass in flight does not delay a fast-lane event.
+- A captain message that names or quotes an event is never swallowed or treated as one.
+- A delivered wake is consumed once; a later arrival of the same text is ordinary input.
+- A captain paste of a wake is ordinary input and does not retire the pending wake.
+- A fast-lane wake the branch took is settled instead of being offered again.
+- A fast-lane wake the branch holds in flight is not offered to it again.
+- A refused fast-lane delivery keeps its ring instead of dropping it.
+- The ring log records what the supervisor doorbell and the consumer actually did.
+- The ring log names the ring command channel and what it did.
+- One event is announced once in a Pi home, even when the watcher's cycle sweeps the queue in the same cycle the fast lane delivers.
+- The slow lane delivers an event whose fast-lane delivery did not complete.
+- A stale consumer marker leaves the event to the slow lane.
+- The procevent library loads in a deployment without the pane delivery path.
+- An acknowledged result is not surfaced by the slow lane again.
 
 ## Active limits and verification
 
