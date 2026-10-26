@@ -88,7 +88,7 @@ else
 fi
 
 # Test 8: wait command consumes newly appended message
-( sleep 0.3 && echo '{"id":"m_wait_1","chatFile":"'$TEST_CHAT_FILE'","role":"captain","text":"wait test","status":"sent"}' >> "$DECK_INGRESS_FILE" ) &
+( sleep 0.3 && echo '{"id":"m_wait_1","chatFile":"'"$TEST_CHAT_FILE"'","role":"captain","text":"wait test","status":"sent"}' >> "$DECK_INGRESS_FILE" ) &
 wait_out=$("$ROOT/bin/fm-deck-ingress.sh" wait 3)
 if echo "$wait_out" | grep -q "wait test"; then
   echo "ok 8 - wait command successfully blocks and captures incoming message"

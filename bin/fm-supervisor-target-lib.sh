@@ -89,6 +89,12 @@ discover_supervisor_backend() {
     printf 'herdr'
     return 0
   fi
+  case "${FM_SUPERVISOR_TARGET:-}" in
+    w*:p*|*:w*:p*)
+      printf 'herdr'
+      return 0
+      ;;
+  esac
   printf '%s' "$FM_SUPERVISOR_BACKEND_DEFAULT"
   return 1
 }

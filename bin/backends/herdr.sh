@@ -3057,10 +3057,20 @@ fm_backend_herdr_projection_token_workspace_gone() {  # <session> <journal> <tas
 }
 
 # fm_backend_herdr_parse_target: split "<session>:<pane_id>" (pane_id itself
-# contains a colon, e.g. "w1:p2") on the FIRST colon only. Sets
-# FM_BACKEND_HERDR_SESSION and FM_BACKEND_HERDR_PANE for the caller.
+# contains a colon, e.g. "w1:p2") on the FIRST colon only. Accepts a bare pane ID
+# (e.g. "w44:p1") without session prefix, defaulting to HERDR_SESSION or "default".
+# Sets FM_BACKEND_HERDR_SESSION and FM_BACKEND_HERDR_PANE for the caller.
 fm_backend_herdr_parse_target() {  # <target>
   local target=$1
+  case "$target" in
+    w*:p*)
+      if [ "${target#*:}" = "${target##*:}" ]; then
+        FM_BACKEND_HERDR_SESSION="${HERDR_SESSION:-default}"
+        FM_BACKEND_HERDR_PANE="$target"
+        return 0
+      fi
+      ;;
+  esac
   FM_BACKEND_HERDR_SESSION=${target%%:*}
   FM_BACKEND_HERDR_PANE=${target#*:}
   [ -n "$FM_BACKEND_HERDR_SESSION" ] && [ -n "$FM_BACKEND_HERDR_PANE" ] && [ "$FM_BACKEND_HERDR_PANE" != "$target" ]
